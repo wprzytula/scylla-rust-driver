@@ -906,9 +906,10 @@ pub fn deser_cql_value(
 }
 
 fn deser_rows(
-    buf: &mut &[u8],
+    buf_bytes: Bytes,
     cached_metadata: Option<&ResultMetadata>,
 ) -> StdResult<Rows, ParseError> {
+    let buf = &mut &*buf_bytes;
     let server_metadata = deser_result_metadata(buf)?;
 
     let metadata = match cached_metadata {
@@ -975,13 +976,14 @@ fn deser_schema_change(buf: &mut &[u8]) -> StdResult<SchemaChange, ParseError> {
 }
 
 pub fn deserialize(
-    buf: &mut &[u8],
+    buf_bytes: Bytes,
     cached_metadata: Option<&ResultMetadata>,
 ) -> StdResult<Result, ParseError> {
+    let buf = &mut &*buf_bytes;
     use self::Result::*;
     Ok(match types::read_int(buf)? {
         0x0001 => Void,
-        0x0002 => Rows(deser_rows(buf, cached_metadata)?),
+        0x0002 => Rows(deser_rows(buf_bytes.slice_ref(buf), cached_metadata)?),
         0x0003 => SetKeyspace(deser_set_keyspace(buf)?),
         0x0004 => Prepared(deser_prepared(buf)?),
         0x0005 => SchemaChange(deser_schema_change(buf)?),
