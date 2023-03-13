@@ -15,7 +15,7 @@ use futures::future::join_all;
 use futures::future::try_join_all;
 use itertools::{Either, Itertools};
 pub use scylla_cql::errors::TranslationError;
-use scylla_cql::frame::response::result::{deser_cql_value, ColumnSpec, Rows};
+use scylla_cql::frame::response::result::{deser_cql_value, ColumnSpec, RawRows};
 use scylla_cql::frame::response::NonErrorResponse;
 use scylla_cql::types::serialize::batch::BatchValues;
 use scylla_cql::types::serialize::row::SerializeRow;
@@ -64,6 +64,7 @@ use crate::transport::legacy_query_result::LegacyQueryResult;
 use crate::transport::load_balancing::{self, RoutingInfo};
 use crate::transport::metrics::Metrics;
 use crate::transport::node::Node;
+use crate::transport::query_result::QueryResult;
 use crate::transport::retry_policy::{QueryInfo, RetryDecision, RetrySession};
 use crate::transport::speculative_execution;
 use crate::transport::Compression;
@@ -725,7 +726,7 @@ impl Session {
         self.handle_set_keyspace_response(&response).await?;
         self.handle_auto_await_schema_agreement(&response).await?;
 
-        let result = response.into_query_result()?;
+        let result = response.into_query_result()?.into_legacy_result()?;
         span.record_result_fields(&result);
         Ok(result)
     }
@@ -1077,7 +1078,7 @@ impl Session {
         self.handle_set_keyspace_response(&response).await?;
         self.handle_auto_await_schema_agreement(&response).await?;
 
-        let result = response.into_query_result()?;
+        let result = response.into_query_result()?.into_legacy_result()?;
         span.record_result_fields(&result);
         Ok(result)
     }
@@ -1273,7 +1274,7 @@ impl Session {
 
         let result = match run_query_result {
             RunQueryResult::IgnoredWriteError => LegacyQueryResult::default(),
-            RunQueryResult::Completed(response) => response,
+            RunQueryResult::Completed(response) => response.into_legacy_result()?,
         };
         span.record_result_fields(&result);
         Ok(result)
@@ -1847,7 +1848,7 @@ impl Session {
 pub(crate) trait AllowedRunQueryResTType {}
 
 impl AllowedRunQueryResTType for Uuid {}
-impl AllowedRunQueryResTType for LegacyQueryResult {}
+impl AllowedRunQueryResTType for QueryResult {}
 impl AllowedRunQueryResTType for NonErrorQueryResponse {}
 
 struct ExecuteQueryContext<'a> {
@@ -2010,9 +2011,9 @@ impl RequestSpan {
         }
     }
 
-    pub(crate) fn record_rows_fields(&self, rows: &Rows) {
-        self.span.record("result_size", rows.serialized_size);
-        self.span.record("result_rows", rows.rows.len());
+    pub(crate) fn record_rows_fields(&self, rows: &RawRows) {
+        self.span.record("result_size", rows.rows_size());
+        self.span.record("result_rows", rows.rows_count());
     }
 
     pub(crate) fn record_replicas<'a>(&'a self, replicas: &'a [(impl Borrow<Arc<Node>>, Shard)]) {

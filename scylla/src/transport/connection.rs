@@ -44,6 +44,7 @@ use super::errors::{BadKeyspaceName, DbError, QueryError};
 use super::iterator::RowIterator;
 use super::legacy_query_result::SingleRowTypedError;
 use super::locator::tablets::{RawTablet, TabletParsingError};
+use super::query_result::QueryResult;
 use super::session::AddressTranslator;
 use super::topology::{PeerEndpoint, UntranslatedEndpoint, UntranslatedPeer};
 use super::NodeAddr;
@@ -240,7 +241,7 @@ impl QueryResponse {
         })
     }
 
-    pub(crate) fn into_query_result(self) -> Result<LegacyQueryResult, QueryError> {
+    pub(crate) fn into_query_result(self) -> Result<QueryResult, QueryError> {
         self.into_non_error_query_response()?.into_query_result()
     }
 }
@@ -260,15 +261,10 @@ impl NonErrorQueryResponse {
         }
     }
 
-    pub(crate) fn into_query_result(self) -> Result<LegacyQueryResult, QueryError> {
-        let (rows, paging_state, col_specs, serialized_size) = match self.response {
-            NonErrorResponse::Result(result::Result::Rows(rs)) => (
-                Some(rs.rows),
-                rs.metadata.paging_state,
-                rs.metadata.col_specs,
-                rs.serialized_size,
-            ),
-            NonErrorResponse::Result(_) => (None, None, vec![], 0),
+    pub(crate) fn into_query_result(self) -> Result<QueryResult, QueryError> {
+        let raw_rows = match self.response {
+            NonErrorResponse::Result(result::Result::Rows(rs)) => Some(rs),
+            NonErrorResponse::Result(_) => None,
             _ => {
                 return Err(QueryError::ProtocolError(
                     "Unexpected server response, expected Result or Error",
@@ -276,14 +272,7 @@ impl NonErrorQueryResponse {
             }
         };
 
-        Ok(LegacyQueryResult {
-            rows,
-            warnings: self.warnings,
-            tracing_id: self.tracing_id,
-            paging_state,
-            col_specs,
-            serialized_size,
-        })
+        Ok(QueryResult::new(raw_rows, self.tracing_id, self.warnings))
     }
 }
 #[cfg(feature = "ssl")]
@@ -824,9 +813,11 @@ impl Connection {
         serial_consistency: Option<SerialConsistency>,
     ) -> Result<LegacyQueryResult, QueryError> {
         let query: Query = query.into();
-        self.query_with_consistency(&query, consistency, serial_consistency, None)
+        Ok(self
+            .query_with_consistency(&query, consistency, serial_consistency, None)
             .await?
-            .into_query_result()
+            .into_query_result()?
+            .into_legacy_result()?)
     }
 
     pub(crate) async fn query(
@@ -1008,7 +999,7 @@ impl Connection {
         &self,
         batch: &Batch,
         values: impl BatchValues,
-    ) -> Result<LegacyQueryResult, QueryError> {
+    ) -> Result<QueryResult, QueryError> {
         self.batch_with_consistency(
             batch,
             values,
@@ -1026,7 +1017,7 @@ impl Connection {
         values: impl BatchValues,
         consistency: Consistency,
         serial_consistency: Option<SerialConsistency>,
-    ) -> Result<LegacyQueryResult, QueryError> {
+    ) -> Result<QueryResult, QueryError> {
         let batch = self.prepare_batch(init_batch, &values).await?;
 
         let contexts = batch.statements.iter().map(|bs| match bs {
@@ -2145,7 +2136,7 @@ mod tests {
     use crate::transport::node::ResolvedContactPoint;
     use crate::transport::topology::UntranslatedEndpoint;
     use crate::utils::test_utils::unique_keyspace_name;
-    use crate::{IntoTypedRows, SessionBuilder};
+    use crate::SessionBuilder;
     use futures::{StreamExt, TryStreamExt};
     use std::collections::HashMap;
     use std::net::SocketAddr;
@@ -2365,9 +2356,10 @@ mod tests {
                 .unwrap()
                 .into_query_result()
                 .unwrap()
-                .rows()
+                .into_legacy_result()
                 .unwrap()
-                .into_typed::<(i32, Vec<u8>)>()
+                .rows_typed::<(i32, Vec<u8>)>()
+                .unwrap()
                 .collect::<Result<Vec<_>, _>>()
                 .unwrap();
             results.sort();
