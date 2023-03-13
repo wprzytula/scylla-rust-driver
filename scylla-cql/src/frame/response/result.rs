@@ -478,11 +478,16 @@ impl RawRows {
         &self.metadata
     }
 
-    /// Consumes the `RawRows` and returns metadata associated with the
-    /// response.
     #[inline]
     pub(crate) fn into_inner(self) -> (ResultMetadata, usize, Bytes) {
         (self.metadata, self.rows_count, self.raw_rows)
+    }
+
+    /// Consumes the `RawRows` and returns metadata associated with the
+    /// response.
+    #[inline]
+    pub fn into_metadata(self) -> ResultMetadata {
+        self.metadata
     }
 
     /// Returns the number of rows that these `RawRows` contain.
