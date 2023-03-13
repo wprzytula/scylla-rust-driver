@@ -632,6 +632,31 @@ pub struct RawRows {
     cached_metadata: Option<Arc<ResultMetadata<'static>>>,
 }
 
+// Test utils for scylla crate.
+#[doc(hidden)]
+impl RawRows {
+    #[inline]
+    pub fn new_for_test(
+        cached_metadata: Option<Arc<ResultMetadata<'static>>>,
+        metadata: Option<ResultMetadata>,
+        global_tables_spec: bool,
+        rows_count: usize,
+        raw_rows: Bytes,
+    ) -> Self {
+        Self {
+            col_count: metadata
+                .as_ref()
+                .or(cached_metadata.as_deref())
+                .expect("At least one metadata source must be Some (serialized or cached)")
+                .col_count(),
+            global_tables_spec,
+            no_metadata: metadata.is_none(),
+            raw_metadata_and_rows: todo!(), // FIXME: serialize metadata, rows_count and put raw_rows after them
+            cached_metadata,
+        }
+    }
+}
+
 /// RESULT:Rows response, in partially serialized form.
 ///
 /// Paging state and metadata are deserialized, rows remain serialized.
