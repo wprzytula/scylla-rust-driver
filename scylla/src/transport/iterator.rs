@@ -57,7 +57,7 @@ const DEFAULT_ITER_PAGE_SIZE: i32 = 5000;
 
 /// Iterator over rows returned by paged queries\
 /// Allows to easily access rows without worrying about handling multiple pages
-pub struct RowIterator {
+pub struct LegacyRowIterator {
     current_row_idx: usize,
     current_page: Rows,
     page_receiver: mpsc::Receiver<Result<ReceivedPage, QueryError>>,
@@ -79,7 +79,7 @@ pub(crate) struct PreparedIteratorConfig {
 
 /// Fetching pages is asynchronous so `RowIterator` does not implement the `Iterator` trait.\
 /// Instead it uses the asynchronous `Stream` trait
-impl Stream for RowIterator {
+impl Stream for LegacyRowIterator {
     type Item = Result<Row, QueryError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -119,10 +119,10 @@ impl Stream for RowIterator {
     }
 }
 
-impl RowIterator {
+impl LegacyRowIterator {
     /// Converts this iterator into an iterator over rows parsed as given type
-    pub fn into_typed<RowT: FromRow>(self) -> TypedRowIterator<RowT> {
-        TypedRowIterator {
+    pub fn into_typed<RowT: FromRow>(self) -> LegacyTypedRowIterator<RowT> {
+        LegacyTypedRowIterator {
             row_iterator: self,
             phantom_data: Default::default(),
         }
@@ -133,7 +133,7 @@ impl RowIterator {
         execution_profile: Arc<ExecutionProfileInner>,
         cluster_data: Arc<ClusterData>,
         metrics: Arc<Metrics>,
-    ) -> Result<RowIterator, QueryError> {
+    ) -> Result<Self, QueryError> {
         if query.get_page_size().is_none() {
             query.set_page_size(DEFAULT_ITER_PAGE_SIZE);
         }
@@ -212,7 +212,7 @@ impl RowIterator {
 
     pub(crate) async fn new_for_prepared_statement(
         mut config: PreparedIteratorConfig,
-    ) -> Result<RowIterator, QueryError> {
+    ) -> Result<Self, QueryError> {
         if config.prepared.get_page_size().is_none() {
             config.prepared.set_page_size(DEFAULT_ITER_PAGE_SIZE);
         }
@@ -332,7 +332,7 @@ impl RowIterator {
         connection: Arc<Connection>,
         consistency: Consistency,
         serial_consistency: Option<SerialConsistency>,
-    ) -> Result<RowIterator, QueryError> {
+    ) -> Result<Self, QueryError> {
         if query.get_page_size().is_none() {
             query.set_page_size(DEFAULT_ITER_PAGE_SIZE);
         }
@@ -362,7 +362,7 @@ impl RowIterator {
         connection: Arc<Connection>,
         consistency: Consistency,
         serial_consistency: Option<SerialConsistency>,
-    ) -> Result<RowIterator, QueryError> {
+    ) -> Result<Self, QueryError> {
         if prepared.get_page_size().is_none() {
             prepared.set_page_size(DEFAULT_ITER_PAGE_SIZE);
         }
@@ -390,7 +390,7 @@ impl RowIterator {
     async fn new_from_worker_future(
         worker_task: impl Future<Output = PageSendAttemptedProof> + Send + 'static,
         mut receiver: mpsc::Receiver<Result<ReceivedPage, QueryError>>,
-    ) -> Result<RowIterator, QueryError> {
+    ) -> Result<Self, QueryError> {
         tokio::task::spawn(worker_task);
 
         // This unwrap is safe because:
@@ -401,7 +401,7 @@ impl RowIterator {
         let pages_received = receiver.recv().await.unwrap()?;
         let rows = pages_received.rows.into_legacy_rows()?;
 
-        Ok(RowIterator {
+        Ok(Self {
             current_row_idx: 0,
             current_page: rows,
             page_receiver: receiver,
@@ -885,12 +885,12 @@ where
 /// Iterator over rows returned by paged queries
 /// where each row is parsed as the given type\
 /// Returned by `RowIterator::into_typed`
-pub struct TypedRowIterator<RowT> {
-    row_iterator: RowIterator,
+pub struct LegacyTypedRowIterator<RowT> {
+    row_iterator: LegacyRowIterator,
     phantom_data: std::marker::PhantomData<RowT>,
 }
 
-impl<RowT> TypedRowIterator<RowT> {
+impl<RowT> LegacyTypedRowIterator<RowT> {
     /// If tracing was enabled returns tracing ids of all finished page queries
     pub fn get_tracing_ids(&self) -> &[Uuid] {
         self.row_iterator.get_tracing_ids()
@@ -914,9 +914,9 @@ pub enum NextRowError {
     FromRowError(#[from] FromRowError),
 }
 
-/// Fetching pages is asynchronous so `TypedRowIterator` does not implement the `Iterator` trait.\
+/// Fetching pages is asynchronous so `LegacyTypedRowIterator` does not implement the `Iterator` trait.\
 /// Instead it uses the asynchronous `Stream` trait
-impl<RowT: FromRow> Stream for TypedRowIterator<RowT> {
+impl<RowT: FromRow> Stream for LegacyTypedRowIterator<RowT> {
     type Item = Result<RowT, NextRowError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -938,5 +938,5 @@ impl<RowT: FromRow> Stream for TypedRowIterator<RowT> {
     }
 }
 
-// TypedRowIterator can be moved freely for any RowT so it's Unpin
-impl<RowT> Unpin for TypedRowIterator<RowT> {}
+// LegacyTypedRowIterator can be moved freely for any RowT so it's Unpin
+impl<RowT> Unpin for LegacyTypedRowIterator<RowT> {}
