@@ -532,7 +532,7 @@ impl GenericSession<LegacyDeserializationApi> {
         query: impl Into<Query>,
         values: impl SerializeRow,
     ) -> Result<LegacyQueryResult, QueryError> {
-        self.do_query(query, values).await
+        self.do_query(query.into(), values).await
     }
 
     /// Queries the database with a custom paging state.
@@ -552,7 +552,8 @@ impl GenericSession<LegacyDeserializationApi> {
         values: impl SerializeRow,
         paging_state: Option<Bytes>,
     ) -> Result<LegacyQueryResult, QueryError> {
-        self.do_query_paged(query, values, paging_state).await
+        self.do_query_paged(query.into(), values, paging_state)
+            .await
     }
 
     /// Run a simple query with paging\
@@ -597,7 +598,7 @@ impl GenericSession<LegacyDeserializationApi> {
         query: impl Into<Query>,
         values: impl SerializeRow,
     ) -> Result<LegacyRowIterator, QueryError> {
-        self.do_query_iter(query, values).await
+        self.do_query_iter(query.into(), values).await
     }
 
     /// Execute a prepared query. Requires a [PreparedStatement](crate::prepared_statement::PreparedStatement)
@@ -706,7 +707,7 @@ impl GenericSession<LegacyDeserializationApi> {
         prepared: impl Into<PreparedStatement>,
         values: impl SerializeRow,
     ) -> Result<LegacyRowIterator, QueryError> {
-        self.do_execute_iter(prepared, values).await
+        self.do_execute_iter(prepared.into(), values).await
     }
 
     /// Perform a batch query\
@@ -887,7 +888,7 @@ where
 
     async fn do_query(
         &self,
-        query: impl Into<Query>,
+        query: Query,
         values: impl SerializeRow,
     ) -> Result<LegacyQueryResult, QueryError> {
         self.do_query_paged(query, values, None).await
@@ -895,12 +896,10 @@ where
 
     async fn do_query_paged(
         &self,
-        query: impl Into<Query>,
+        query: Query,
         values: impl SerializeRow,
         paging_state: Option<Bytes>,
     ) -> Result<LegacyQueryResult, QueryError> {
-        let query: Query = query.into();
-
         let execution_profile = query
             .get_execution_profile_handle()
             .unwrap_or_else(|| self.get_default_execution_profile_handle())
@@ -1024,11 +1023,9 @@ where
 
     async fn do_query_iter(
         &self,
-        query: impl Into<Query>,
+        query: Query,
         values: impl SerializeRow,
     ) -> Result<LegacyRowIterator, QueryError> {
-        let query: Query = query.into();
-
         let execution_profile = query
             .get_execution_profile_handle()
             .unwrap_or_else(|| self.get_default_execution_profile_handle())
@@ -1263,10 +1260,9 @@ where
 
     async fn do_execute_iter(
         &self,
-        prepared: impl Into<PreparedStatement>,
+        prepared: PreparedStatement,
         values: impl SerializeRow,
     ) -> Result<LegacyRowIterator, QueryError> {
-        let prepared = prepared.into();
         let serialized_values = prepared.serialize_values(&values)?;
 
         let execution_profile = prepared
