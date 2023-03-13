@@ -552,7 +552,10 @@ impl GenericSession<LegacyDeserializationApi> {
         query: impl Into<Query>,
         values: impl SerializeRow,
     ) -> Result<LegacyQueryResult, QueryError> {
-        self.do_query_unpaged(&query.into(), values).await
+        Ok(self
+            .do_query_unpaged(&query.into(), values)
+            .await?
+            .into_legacy_result()?)
     }
 
     /// Queries a single page from the database, optionally continuing from a saved point.
@@ -609,8 +612,10 @@ impl GenericSession<LegacyDeserializationApi> {
         values: impl SerializeRow,
         paging_state: PagingState,
     ) -> Result<(LegacyQueryResult, PagingStateResponse), QueryError> {
-        self.do_query_single_page(&query.into(), values, paging_state)
-            .await
+        let (result, paging_state_response) = self
+            .do_query_single_page(&query.into(), values, paging_state)
+            .await?;
+        Ok((result.into_legacy_result()?, paging_state_response))
     }
 
     /// Run an unprepared query with paging\
@@ -655,7 +660,9 @@ impl GenericSession<LegacyDeserializationApi> {
         query: impl Into<Query>,
         values: impl SerializeRow,
     ) -> Result<LegacyRowIterator, QueryError> {
-        self.do_query_iter(query.into(), values).await
+        self.do_query_iter(query.into(), values)
+            .await
+            .map(RawIterator::into_legacy)
     }
 
     /// Execute a prepared statement. Requires a [PreparedStatement]
@@ -706,7 +713,10 @@ impl GenericSession<LegacyDeserializationApi> {
         prepared: &PreparedStatement,
         values: impl SerializeRow,
     ) -> Result<LegacyQueryResult, QueryError> {
-        self.do_execute_unpaged(prepared, values).await
+        Ok(self
+            .do_execute_unpaged(prepared, values)
+            .await?
+            .into_legacy_result()?)
     }
 
     /// Executes a prepared statement, restricting results to single page.
@@ -768,8 +778,10 @@ impl GenericSession<LegacyDeserializationApi> {
         values: impl SerializeRow,
         paging_state: PagingState,
     ) -> Result<(LegacyQueryResult, PagingStateResponse), QueryError> {
-        self.do_execute_single_page(prepared, values, paging_state)
-            .await
+        let (result, paging_state_response) = self
+            .do_execute_single_page(prepared, values, paging_state)
+            .await?;
+        Ok((result.into_legacy_result()?, paging_state_response))
     }
 
     /// Run a prepared query with paging.\
@@ -817,7 +829,9 @@ impl GenericSession<LegacyDeserializationApi> {
         prepared: impl Into<PreparedStatement>,
         values: impl SerializeRow,
     ) -> Result<LegacyRowIterator, QueryError> {
-        self.do_execute_iter(prepared.into(), values).await
+        self.do_execute_iter(prepared.into(), values)
+            .await
+            .map(RawIterator::into_legacy)
     }
 
     /// Perform a batch query\
@@ -870,7 +884,7 @@ impl GenericSession<LegacyDeserializationApi> {
         batch: &Batch,
         values: impl BatchValues,
     ) -> Result<LegacyQueryResult, QueryError> {
-        self.do_batch(batch, values).await
+        Ok(self.do_batch(batch, values).await?.into_legacy_result()?)
     }
 }
 
@@ -1000,7 +1014,7 @@ where
         &self,
         query: &Query,
         values: impl SerializeRow,
-    ) -> Result<LegacyQueryResult, QueryError> {
+    ) -> Result<QueryResult, QueryError> {
         let (result, paging_state_response) = self
             .query(query, values, None, PagingState::start())
             .await?;
@@ -1016,7 +1030,7 @@ where
         query: &Query,
         values: impl SerializeRow,
         paging_state: PagingState,
-    ) -> Result<(LegacyQueryResult, PagingStateResponse), QueryError> {
+    ) -> Result<(QueryResult, PagingStateResponse), QueryError> {
         self.query(
             query,
             values,
@@ -1043,7 +1057,7 @@ where
         values: impl SerializeRow,
         page_size: Option<PageSize>,
         paging_state: PagingState,
-    ) -> Result<(LegacyQueryResult, PagingStateResponse), QueryError> {
+    ) -> Result<(QueryResult, PagingStateResponse), QueryError> {
         let execution_profile = query
             .get_execution_profile_handle()
             .unwrap_or_else(|| self.get_default_execution_profile_handle())
@@ -1129,9 +1143,9 @@ where
         self.handle_set_keyspace_response(&response).await?;
         self.handle_auto_await_schema_agreement(&response).await?;
 
-        let (result, paging_state) = response.into_query_result_and_paging_state()?;
-        let result = result.into_legacy_result()?;
-        Ok((result, paging_state))
+        response
+            .into_query_result_and_paging_state()
+            .map_err(Into::into)
     }
 
     async fn handle_set_keyspace_response(
@@ -1173,7 +1187,7 @@ where
         &self,
         query: Query,
         values: impl SerializeRow,
-    ) -> Result<LegacyRowIterator, QueryError> {
+    ) -> Result<RawIterator, QueryError> {
         let execution_profile = query
             .get_execution_profile_handle()
             .unwrap_or_else(|| self.get_default_execution_profile_handle())
@@ -1187,7 +1201,6 @@ where
                 self.metrics.clone(),
             )
             .await
-            .map(RawIterator::into_legacy)
         } else {
             // Making RawIterator::new_for_query work with values is too hard (if even possible)
             // so instead of sending one prepare to a specific connection on each iterator query,
@@ -1202,7 +1215,6 @@ where
                 metrics: self.metrics.clone(),
             })
             .await
-            .map(RawIterator::into_legacy)
         }
     }
 
@@ -1302,7 +1314,7 @@ where
         &self,
         prepared: &PreparedStatement,
         values: impl SerializeRow,
-    ) -> Result<LegacyQueryResult, QueryError> {
+    ) -> Result<QueryResult, QueryError> {
         let serialized_values = prepared.serialize_values(&values)?;
         let (result, paging_state) = self
             .execute(prepared, &serialized_values, None, PagingState::start())
@@ -1319,7 +1331,7 @@ where
         prepared: &PreparedStatement,
         values: impl SerializeRow,
         paging_state: PagingState,
-    ) -> Result<(LegacyQueryResult, PagingStateResponse), QueryError> {
+    ) -> Result<(QueryResult, PagingStateResponse), QueryError> {
         let serialized_values = prepared.serialize_values(&values)?;
         let page_size = prepared.get_validated_page_size();
         self.execute(prepared, &serialized_values, Some(page_size), paging_state)
@@ -1342,7 +1354,7 @@ where
         serialized_values: &SerializedValues,
         page_size: Option<PageSize>,
         paging_state: PagingState,
-    ) -> Result<(LegacyQueryResult, PagingStateResponse), QueryError> {
+    ) -> Result<(QueryResult, PagingStateResponse), QueryError> {
         let values_ref = &serialized_values;
         let paging_state_ref = &paging_state;
 
@@ -1431,16 +1443,16 @@ where
         self.handle_set_keyspace_response(&response).await?;
         self.handle_auto_await_schema_agreement(&response).await?;
 
-        let (result, paging_state) = response.into_query_result_and_paging_state()?;
-        let result = result.into_legacy_result()?;
-        Ok((result, paging_state))
+        response
+            .into_query_result_and_paging_state()
+            .map_err(Into::into)
     }
 
     async fn do_execute_iter(
         &self,
         prepared: PreparedStatement,
         values: impl SerializeRow,
-    ) -> Result<LegacyRowIterator, QueryError> {
+    ) -> Result<RawIterator, QueryError> {
         let serialized_values = prepared.serialize_values(&values)?;
 
         let execution_profile = prepared
@@ -1456,14 +1468,13 @@ where
             metrics: self.metrics.clone(),
         })
         .await
-        .map(RawIterator::into_legacy)
     }
 
     async fn do_batch(
         &self,
         batch: &Batch,
         values: impl BatchValues,
-    ) -> Result<LegacyQueryResult, QueryError> {
+    ) -> Result<QueryResult, QueryError> {
         // Shard-awareness behavior for batch will be to pick shard based on first batch statement's shard
         // If users batch statements by shard, they will be rewarded with full shard awareness
 
@@ -1540,8 +1551,8 @@ where
             .await?;
 
         let result = match run_query_result {
-            RunQueryResult::IgnoredWriteError => LegacyQueryResult::mock_empty(),
-            RunQueryResult::Completed(response) => response.into_legacy_result()?,
+            RunQueryResult::IgnoredWriteError => QueryResult::mock_empty(),
+            RunQueryResult::Completed(response) => response,
         };
         Ok(result)
     }
@@ -1731,6 +1742,7 @@ where
 
         // Get tracing info
         let maybe_tracing_info: Option<TracingInfo> = traces_session_res
+            .into_legacy_result()?
             .maybe_first_row_typed()
             .map_err(|err| match err {
                 MaybeFirstRowTypedError::RowsExpected(e) => {
@@ -1747,9 +1759,12 @@ where
         };
 
         // Get tracing events
-        let tracing_event_rows = traces_events_res.rows_typed().map_err(|err| {
-            ProtocolError::Tracing(TracingProtocolError::TracesEventsNotRows(err))
-        })?;
+        let tracing_event_rows = traces_events_res
+            .into_legacy_result()?
+            .rows_typed()
+            .map_err(|err| {
+                ProtocolError::Tracing(TracingProtocolError::TracesEventsNotRows(err))
+            })?;
 
         for event in tracing_event_rows {
             let tracing_event: TracingEvent = event.map_err(|err| {
