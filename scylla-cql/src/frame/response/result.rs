@@ -636,6 +636,17 @@ pub struct RawRows {
 #[doc(hidden)]
 impl RawRows {
     #[inline]
+    pub fn mock_empty() -> Self {
+        Self {
+            col_count: 0,
+            global_tables_spec: false,
+            no_metadata: false,
+            raw_metadata_and_rows: Bytes::new(),
+            cached_metadata: None,
+        }
+    }
+
+    #[inline]
     pub fn new_for_test(
         cached_metadata: Option<Arc<ResultMetadata<'static>>>,
         metadata: Option<ResultMetadata>,
@@ -741,7 +752,7 @@ impl<'frame> RawRowsWithDeserializedMetadata<'frame> {
 
 #[derive(Debug)]
 pub struct Rows {
-    pub metadata: Arc<ResultMetadata<'static>>,
+    pub metadata: ResultMetadataHolder<'static>,
     pub paging_state_response: PagingStateResponse,
     pub rows_count: usize,
     pub rows: Vec<Row>,
@@ -752,7 +763,7 @@ pub struct Rows {
 #[derive(Debug)]
 pub enum Result {
     Void,
-    Rows(Rows),
+    Rows((RawRows, PagingStateResponse)),
     SetKeyspace(SetKeyspace),
     Prepared(Prepared),
     SchemaChange(SchemaChange),
@@ -1130,6 +1141,29 @@ impl RawRows {
         |cached| ResultMetadataHolder::SharedCached(Arc::clone(cached)),
         deser_col_specs_owned,
     );
+
+    pub fn into_legacy_rows(
+        self,
+        paging_state_response: PagingStateResponse,
+    ) -> StdResult<Rows, RowsParseError> {
+        let raw_rows_with_deserialized_metadata = self.deserialize_owned_metadata()?;
+
+        let rows_size = raw_rows_with_deserialized_metadata.rows_size();
+        let rows_count = raw_rows_with_deserialized_metadata.rows_count();
+        let rows = raw_rows_with_deserialized_metadata
+            .rows_iter::<Row>()?
+            .collect::<StdResult<_, _>>()?;
+
+        let metadata = raw_rows_with_deserialized_metadata.into_metadata();
+
+        Ok(Rows {
+            metadata,
+            paging_state_response,
+            rows_count,
+            rows,
+            serialized_size: rows_size,
+        })
+    }
 }
 
 fn deser_prepared_metadata(
@@ -1333,46 +1367,9 @@ pub fn deser_cql_value(
 fn deser_rows(
     buf_bytes: Bytes,
     cached_metadata: Option<&Arc<ResultMetadata<'static>>>,
-) -> StdResult<Rows, RowsParseError> {
-    let buf = &mut &*buf_bytes;
-    let (server_metadata, paging_state_response) = deser_result_metadata(buf)?;
-
-    let metadata = match cached_metadata {
-        Some(cached) => Arc::clone(cached),
-        None => {
-            // No cached_metadata provided. Server is supposed to provide the result metadata.
-            if server_metadata.col_count != server_metadata.col_specs.len() {
-                return Err(RowsParseError::ColumnCountMismatch {
-                    col_count: server_metadata.col_count,
-                    col_specs_count: server_metadata.col_specs.len(),
-                });
-            }
-            Arc::new(server_metadata)
-        }
-    };
-
-    let original_size = buf.len();
-
-    let rows_count: usize =
-        types::read_int_length(buf).map_err(RowsParseError::RowsCountParseError)?;
-
-    let raw_rows_iter = RowIterator::new(
-        rows_count,
-        &metadata.col_specs,
-        FrameSlice::new_borrowed(buf),
-    );
-    let rows_iter = TypedRowIterator::<Row>::new(raw_rows_iter)
-        .map_err(|err| DeserializationError::new(err.0))?;
-
-    let rows = rows_iter.collect::<StdResult<_, _>>()?;
-
-    Ok(Rows {
-        metadata,
-        paging_state_response,
-        rows_count,
-        rows,
-        serialized_size: original_size - buf.len(),
-    })
+) -> StdResult<(RawRows, PagingStateResponse), RowsParseError> {
+    let mut frame_slice = FrameSlice::new(&buf_bytes);
+    RawRows::deserialize(&mut frame_slice, cached_metadata.cloned()).map_err(Into::into)
 }
 
 fn deser_set_keyspace(buf: &mut &[u8]) -> StdResult<SetKeyspace, SetKeyspaceParseError> {
