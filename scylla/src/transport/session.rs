@@ -476,7 +476,7 @@ pub(crate) enum RunQueryResult<ResT> {
     Completed(ResT),
 }
 
-impl GenericSession<LegacyDeserializationApi> {
+impl GenericSession<CurrentDeserializationApi> {
     /// Sends a query to the database and receives a response.\
     /// Returns only a single page of results, to receive multiple pages use [query_iter](Session::query_iter)
     ///
@@ -531,11 +531,8 @@ impl GenericSession<LegacyDeserializationApi> {
         &self,
         query: impl Into<Query>,
         values: impl SerializeRow,
-    ) -> Result<LegacyQueryResult, QueryError> {
-        Ok(self
-            .do_query(query.into(), values)
-            .await?
-            .into_legacy_result()?)
+    ) -> Result<QueryResult, QueryError> {
+        self.do_query(query.into(), values).await
     }
 
     /// Queries the database with a custom paging state.
@@ -554,11 +551,9 @@ impl GenericSession<LegacyDeserializationApi> {
         query: impl Into<Query>,
         values: impl SerializeRow,
         paging_state: Option<Bytes>,
-    ) -> Result<LegacyQueryResult, QueryError> {
-        Ok(self
-            .do_query_paged(query.into(), values, paging_state)
-            .await?
-            .into_legacy_result()?)
+    ) -> Result<QueryResult, QueryError> {
+        self.do_query_paged(query.into(), values, paging_state)
+            .await
     }
 
     /// Run a simple query with paging\
@@ -602,10 +597,8 @@ impl GenericSession<LegacyDeserializationApi> {
         &self,
         query: impl Into<Query>,
         values: impl SerializeRow,
-    ) -> Result<LegacyRowIterator, QueryError> {
-        self.do_query_iter(query.into(), values)
-            .await
-            .map(RawIterator::into_legacy)
+    ) -> Result<RawIterator, QueryError> {
+        self.do_query_iter(query.into(), values).await
     }
 
     /// Execute a prepared query. Requires a [PreparedStatement](crate::prepared_statement::PreparedStatement)
@@ -649,11 +642,8 @@ impl GenericSession<LegacyDeserializationApi> {
         &self,
         prepared: &PreparedStatement,
         values: impl SerializeRow,
-    ) -> Result<LegacyQueryResult, QueryError> {
-        Ok(self
-            .do_execute(prepared, values)
-            .await?
-            .into_legacy_result()?)
+    ) -> Result<QueryResult, QueryError> {
+        self.do_execute(prepared, values).await
     }
 
     /// Executes a previously prepared statement with previously received paging state
@@ -667,11 +657,8 @@ impl GenericSession<LegacyDeserializationApi> {
         prepared: &PreparedStatement,
         values: impl SerializeRow,
         paging_state: Option<Bytes>,
-    ) -> Result<LegacyQueryResult, QueryError> {
-        Ok(self
-            .do_execute_paged(prepared, values, paging_state)
-            .await?
-            .into_legacy_result()?)
+    ) -> Result<QueryResult, QueryError> {
+        self.do_execute_paged(prepared, values, paging_state).await
     }
 
     /// Run a prepared query with paging\
@@ -719,10 +706,8 @@ impl GenericSession<LegacyDeserializationApi> {
         &self,
         prepared: impl Into<PreparedStatement>,
         values: impl SerializeRow,
-    ) -> Result<LegacyRowIterator, QueryError> {
-        self.do_execute_iter(prepared.into(), values)
-            .await
-            .map(RawIterator::into_legacy)
+    ) -> Result<RawIterator, QueryError> {
+        self.do_execute_iter(prepared.into(), values).await
     }
 
     /// Perform a batch query\
@@ -770,6 +755,82 @@ impl GenericSession<LegacyDeserializationApi> {
     /// # Ok(())
     /// # }
     /// ```
+    pub async fn batch(
+        &self,
+        batch: &Batch,
+        values: impl BatchValues,
+    ) -> Result<QueryResult, QueryError> {
+        self.do_batch(batch, values).await
+    }
+}
+
+impl GenericSession<LegacyDeserializationApi> {
+    pub async fn query(
+        &self,
+        query: impl Into<Query>,
+        values: impl SerializeRow,
+    ) -> Result<LegacyQueryResult, QueryError> {
+        Ok(self
+            .do_query(query.into(), values)
+            .await?
+            .into_legacy_result()?)
+    }
+
+    pub async fn query_paged(
+        &self,
+        query: impl Into<Query>,
+        values: impl SerializeRow,
+        paging_state: Option<Bytes>,
+    ) -> Result<LegacyQueryResult, QueryError> {
+        Ok(self
+            .do_query_paged(query.into(), values, paging_state)
+            .await?
+            .into_legacy_result()?)
+    }
+
+    pub async fn query_iter(
+        &self,
+        query: impl Into<Query>,
+        values: impl SerializeRow,
+    ) -> Result<LegacyRowIterator, QueryError> {
+        self.do_query_iter(query.into(), values)
+            .await
+            .map(RawIterator::into_legacy)
+    }
+
+    pub async fn execute(
+        &self,
+        prepared: &PreparedStatement,
+        values: impl SerializeRow,
+    ) -> Result<LegacyQueryResult, QueryError> {
+        Ok(self
+            .do_execute(prepared, values)
+            .await?
+            .into_legacy_result()?)
+    }
+
+    pub async fn execute_paged(
+        &self,
+        prepared: &PreparedStatement,
+        values: impl SerializeRow,
+        paging_state: Option<Bytes>,
+    ) -> Result<LegacyQueryResult, QueryError> {
+        Ok(self
+            .do_execute_paged(prepared, values, paging_state)
+            .await?
+            .into_legacy_result()?)
+    }
+
+    pub async fn execute_iter(
+        &self,
+        prepared: impl Into<PreparedStatement>,
+        values: impl SerializeRow,
+    ) -> Result<LegacyRowIterator, QueryError> {
+        self.do_execute_iter(prepared.into(), values)
+            .await
+            .map(RawIterator::into_legacy)
+    }
+
     pub async fn batch(
         &self,
         batch: &Batch,
