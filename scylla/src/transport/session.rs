@@ -532,7 +532,10 @@ impl GenericSession<LegacyDeserializationApi> {
         query: impl Into<Query>,
         values: impl SerializeRow,
     ) -> Result<LegacyQueryResult, QueryError> {
-        self.do_query(query.into(), values).await
+        Ok(self
+            .do_query(query.into(), values)
+            .await?
+            .into_legacy_result()?)
     }
 
     /// Queries the database with a custom paging state.
@@ -552,8 +555,10 @@ impl GenericSession<LegacyDeserializationApi> {
         values: impl SerializeRow,
         paging_state: Option<Bytes>,
     ) -> Result<LegacyQueryResult, QueryError> {
-        self.do_query_paged(query.into(), values, paging_state)
-            .await
+        Ok(self
+            .do_query_paged(query.into(), values, paging_state)
+            .await?
+            .into_legacy_result()?)
     }
 
     /// Run a simple query with paging\
@@ -598,7 +603,9 @@ impl GenericSession<LegacyDeserializationApi> {
         query: impl Into<Query>,
         values: impl SerializeRow,
     ) -> Result<LegacyRowIterator, QueryError> {
-        self.do_query_iter(query.into(), values).await
+        self.do_query_iter(query.into(), values)
+            .await
+            .map(RawIterator::into_legacy)
     }
 
     /// Execute a prepared query. Requires a [PreparedStatement](crate::prepared_statement::PreparedStatement)
@@ -643,7 +650,10 @@ impl GenericSession<LegacyDeserializationApi> {
         prepared: &PreparedStatement,
         values: impl SerializeRow,
     ) -> Result<LegacyQueryResult, QueryError> {
-        self.do_execute(prepared, values).await
+        Ok(self
+            .do_execute(prepared, values)
+            .await?
+            .into_legacy_result()?)
     }
 
     /// Executes a previously prepared statement with previously received paging state
@@ -658,7 +668,10 @@ impl GenericSession<LegacyDeserializationApi> {
         values: impl SerializeRow,
         paging_state: Option<Bytes>,
     ) -> Result<LegacyQueryResult, QueryError> {
-        self.do_execute_paged(prepared, values, paging_state).await
+        Ok(self
+            .do_execute_paged(prepared, values, paging_state)
+            .await?
+            .into_legacy_result()?)
     }
 
     /// Run a prepared query with paging\
@@ -707,7 +720,9 @@ impl GenericSession<LegacyDeserializationApi> {
         prepared: impl Into<PreparedStatement>,
         values: impl SerializeRow,
     ) -> Result<LegacyRowIterator, QueryError> {
-        self.do_execute_iter(prepared.into(), values).await
+        self.do_execute_iter(prepared.into(), values)
+            .await
+            .map(RawIterator::into_legacy)
     }
 
     /// Perform a batch query\
@@ -760,7 +775,7 @@ impl GenericSession<LegacyDeserializationApi> {
         batch: &Batch,
         values: impl BatchValues,
     ) -> Result<LegacyQueryResult, QueryError> {
-        self.do_batch(batch, values).await
+        Ok(self.do_batch(batch, values).await?.into_legacy_result()?)
     }
 }
 
@@ -890,7 +905,7 @@ where
         &self,
         query: Query,
         values: impl SerializeRow,
-    ) -> Result<LegacyQueryResult, QueryError> {
+    ) -> Result<QueryResult, QueryError> {
         self.do_query_paged(query, values, None).await
     }
 
@@ -899,7 +914,7 @@ where
         query: Query,
         values: impl SerializeRow,
         paging_state: Option<Bytes>,
-    ) -> Result<LegacyQueryResult, QueryError> {
+    ) -> Result<QueryResult, QueryError> {
         let execution_profile = query
             .get_execution_profile_handle()
             .unwrap_or_else(|| self.get_default_execution_profile_handle())
@@ -981,7 +996,7 @@ where
         self.handle_set_keyspace_response(&response).await?;
         self.handle_auto_await_schema_agreement(&response).await?;
 
-        let result = response.into_query_result()?.into_legacy_result()?;
+        let result = response.into_query_result()?;
         span.record_result_fields(&result);
         Ok(result)
     }
@@ -1025,7 +1040,7 @@ where
         &self,
         query: Query,
         values: impl SerializeRow,
-    ) -> Result<LegacyRowIterator, QueryError> {
+    ) -> Result<RawIterator, QueryError> {
         let execution_profile = query
             .get_execution_profile_handle()
             .unwrap_or_else(|| self.get_default_execution_profile_handle())
@@ -1039,7 +1054,6 @@ where
                 self.metrics.clone(),
             )
             .await
-            .map(RawIterator::into_legacy)
         } else {
             // Making RawIterator::new_for_query work with values is too hard (if even possible)
             // so instead of sending one prepare to a specific connection on each iterator query,
@@ -1054,7 +1068,6 @@ where
                 metrics: self.metrics.clone(),
             })
             .await
-            .map(RawIterator::into_legacy)
         }
     }
 
@@ -1156,7 +1169,7 @@ where
         &self,
         prepared: &PreparedStatement,
         values: impl SerializeRow,
-    ) -> Result<LegacyQueryResult, QueryError> {
+    ) -> Result<QueryResult, QueryError> {
         self.do_execute_paged(prepared, values, None).await
     }
 
@@ -1165,7 +1178,7 @@ where
         prepared: &PreparedStatement,
         values: impl SerializeRow,
         paging_state: Option<Bytes>,
-    ) -> Result<LegacyQueryResult, QueryError> {
+    ) -> Result<QueryResult, QueryError> {
         let serialized_values = prepared.serialize_values(&values)?;
         let values_ref = &serialized_values;
         let paging_state_ref = &paging_state;
@@ -1253,7 +1266,7 @@ where
         self.handle_set_keyspace_response(&response).await?;
         self.handle_auto_await_schema_agreement(&response).await?;
 
-        let result = response.into_query_result()?.into_legacy_result()?;
+        let result = response.into_query_result()?;
         span.record_result_fields(&result);
         Ok(result)
     }
@@ -1262,7 +1275,7 @@ where
         &self,
         prepared: PreparedStatement,
         values: impl SerializeRow,
-    ) -> Result<LegacyRowIterator, QueryError> {
+    ) -> Result<RawIterator, QueryError> {
         let serialized_values = prepared.serialize_values(&values)?;
 
         let execution_profile = prepared
@@ -1278,14 +1291,13 @@ where
             metrics: self.metrics.clone(),
         })
         .await
-        .map(RawIterator::into_legacy)
     }
 
     async fn do_batch(
         &self,
         batch: &Batch,
         values: impl BatchValues,
-    ) -> Result<LegacyQueryResult, QueryError> {
+    ) -> Result<QueryResult, QueryError> {
         // Shard-awareness behavior for batch will be to pick shard based on first batch statement's shard
         // If users batch statements by shard, they will be rewarded with full shard awareness
 
@@ -1362,8 +1374,8 @@ where
             .await?;
 
         let result = match run_query_result {
-            RunQueryResult::IgnoredWriteError => LegacyQueryResult::default(),
-            RunQueryResult::Completed(response) => response.into_legacy_result()?,
+            RunQueryResult::IgnoredWriteError => QueryResult::mock_empty(),
+            RunQueryResult::Completed(response) => response,
         };
         span.record_result_fields(&result);
         Ok(result)
@@ -1559,6 +1571,7 @@ where
 
         // Get tracing info
         let maybe_tracing_info: Option<TracingInfo> = traces_session_res
+            .into_legacy_result()?
             .maybe_first_row_typed()
             .map_err(|err| match err {
                 MaybeFirstRowTypedError::RowsExpected(_) => QueryError::ProtocolError(
@@ -1575,9 +1588,12 @@ where
         };
 
         // Get tracing events
-        let tracing_event_rows = traces_events_res.rows_typed().map_err(|_| {
-            QueryError::ProtocolError("Response to system_traces.events query was not Rows")
-        })?;
+        let tracing_event_rows = traces_events_res
+            .into_legacy_result()?
+            .rows_typed()
+            .map_err(|_| {
+                QueryError::ProtocolError("Response to system_traces.events query was not Rows")
+            })?;
 
         for event in tracing_event_rows {
             let tracing_event: TracingEvent = event.map_err(|_| {
@@ -2093,11 +2109,9 @@ impl RequestSpan {
         }
     }
 
-    pub(crate) fn record_result_fields(&self, result: &LegacyQueryResult) {
-        self.span.record("result_size", result.serialized_size);
-        if let Some(rows) = result.rows.as_ref() {
-            self.span.record("result_rows", rows.len());
-        }
+    pub(crate) fn record_result_fields(&self, result: &QueryResult) {
+        self.span.record("result_size", result.rows_size());
+        self.span.record("result_rows", result.rows_num());
     }
 
     pub(crate) fn record_rows_fields(&self, rows: &RawRows) {
