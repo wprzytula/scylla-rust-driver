@@ -655,7 +655,7 @@ impl GenericSession<LegacyDeserializationApi> {
         query: impl Into<Query>,
         values: impl SerializeRow,
     ) -> Result<LegacyRowIterator, QueryError> {
-        self.do_query_iter(query, values).await
+        self.do_query_iter(query.into(), values).await
     }
 
     /// Execute a prepared statement. Requires a [PreparedStatement]
@@ -817,7 +817,7 @@ impl GenericSession<LegacyDeserializationApi> {
         prepared: impl Into<PreparedStatement>,
         values: impl SerializeRow,
     ) -> Result<LegacyRowIterator, QueryError> {
-        self.do_execute_iter(prepared, values).await
+        self.do_execute_iter(prepared.into(), values).await
     }
 
     /// Perform a batch query\
@@ -1171,11 +1171,9 @@ where
 
     async fn do_query_iter(
         &self,
-        query: impl Into<Query>,
+        query: Query,
         values: impl SerializeRow,
     ) -> Result<LegacyRowIterator, QueryError> {
-        let query: Query = query.into();
-
         let execution_profile = query
             .get_execution_profile_handle()
             .unwrap_or_else(|| self.get_default_execution_profile_handle())
@@ -1440,10 +1438,9 @@ where
 
     async fn do_execute_iter(
         &self,
-        prepared: impl Into<PreparedStatement>,
+        prepared: PreparedStatement,
         values: impl SerializeRow,
     ) -> Result<LegacyRowIterator, QueryError> {
-        let prepared = prepared.into();
         let serialized_values = prepared.serialize_values(&values)?;
 
         let execution_profile = prepared
