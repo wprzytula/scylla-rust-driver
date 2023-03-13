@@ -10,6 +10,7 @@ use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use futures::Stream;
+use scylla_cql::frame::response::result::RawRows;
 use scylla_cql::frame::response::NonErrorResponse;
 use scylla_cql::frame::types::SerialConsistency;
 use scylla_cql::types::serialize::row::SerializedValues;
@@ -64,7 +65,7 @@ pub struct RowIterator {
 }
 
 struct ReceivedPage {
-    rows: Rows,
+    rows: RawRows,
     tracing_id: Option<Uuid>,
 }
 
@@ -87,7 +88,11 @@ impl Stream for RowIterator {
         if s.is_current_page_exhausted() {
             match Pin::new(&mut s.page_receiver).poll_recv(cx) {
                 Poll::Ready(Some(Ok(received_page))) => {
-                    s.current_page = received_page.rows;
+                    let rows = match received_page.rows.into_legacy_rows() {
+                        Ok(rows) => rows,
+                        Err(err) => return Poll::Ready(Some(Err(err.into()))),
+                    };
+                    s.current_page = rows;
                     s.current_row_idx = 0;
 
                     if let Some(tracing_id) = received_page.tracing_id {
@@ -394,10 +399,11 @@ impl RowIterator {
         // - That future is polled in a tokio::task which isn't going to be
         //   cancelled
         let pages_received = receiver.recv().await.unwrap()?;
+        let rows = pages_received.rows.into_legacy_rows()?;
 
         Ok(RowIterator {
             current_row_idx: 0,
-            current_page: pages_received.rows,
+            current_page: rows,
             page_receiver: receiver,
             tracing_ids: if let Some(tracing_id) = pages_received.tracing_id {
                 vec![tracing_id]
@@ -425,7 +431,8 @@ impl RowIterator {
 // A separate module is used here so that the parent module cannot construct
 // SendAttemptedProof directly.
 mod checked_channel_sender {
-    use scylla_cql::{errors::QueryError, frame::response::result::Rows};
+    use scylla_cql::errors::QueryError;
+    use scylla_cql::frame::response::result::RawRows;
     use std::marker::PhantomData;
     use tokio::sync::mpsc;
     use uuid::Uuid;
@@ -466,12 +473,7 @@ mod checked_channel_sender {
             Result<(), mpsc::error::SendError<ResultPage>>,
         ) {
             let empty_page = ReceivedPage {
-                rows: Rows {
-                    metadata: Default::default(),
-                    rows_count: 0,
-                    rows: Vec::new(),
-                    serialized_size: 0,
-                },
+                rows: RawRows::default(),
                 tracing_id,
             };
             self.send(Ok(empty_page)).await
@@ -674,7 +676,7 @@ where
 
         match query_response {
             Ok(NonErrorQueryResponse {
-                response: NonErrorResponse::Result(result::Result::Rows(mut rows)),
+                response: NonErrorResponse::Result(result::Result::Rows(rows)),
                 tracing_id,
                 ..
             }) => {
@@ -685,7 +687,7 @@ where
                     .load_balancing_policy
                     .on_query_success(&self.statement_info, elapsed, node);
 
-                self.paging_state = rows.metadata.paging_state.take();
+                self.paging_state = rows.metadata().paging_state.clone();
 
                 request_span.record_rows_fields(&rows);
 
@@ -849,8 +851,8 @@ where
             let result = (self.fetcher)(paging_state).await?;
             let response = result.into_non_error_query_response()?;
             match response.response {
-                NonErrorResponse::Result(result::Result::Rows(mut rows)) => {
-                    paging_state = rows.metadata.paging_state.take();
+                NonErrorResponse::Result(result::Result::Rows(rows)) => {
+                    paging_state = rows.metadata().paging_state.clone();
                     let (proof, send_result) = self
                         .sender
                         .send(Ok(ReceivedPage {

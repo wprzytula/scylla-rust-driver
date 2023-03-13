@@ -543,7 +543,7 @@ pub struct Rows {
 #[derive(Debug)]
 pub enum Result {
     Void,
-    Rows(Rows),
+    Rows(RawRows),
     SetKeyspace(SetKeyspace),
     Prepared(Prepared),
     SchemaChange(SchemaChange),
@@ -880,7 +880,7 @@ pub fn deser_cql_value(
 fn deser_rows(
     buf_bytes: Bytes,
     cached_metadata: Option<&ResultMetadata>,
-) -> StdResult<Rows, ParseError> {
+) -> StdResult<RawRows, ParseError> {
     let buf = &mut &*buf_bytes;
     let server_metadata = deser_result_metadata(buf)?;
 
@@ -899,25 +899,12 @@ fn deser_rows(
         }
     };
 
-    let original_size = buf.len();
-
     let rows_count: usize = types::read_int(buf)?.try_into()?;
 
-    let raw_rows_iter = RowIterator::new(
-        rows_count,
-        &metadata.col_specs,
-        FrameSlice::new_borrowed(buf),
-    );
-    let rows_iter = TypedRowIterator::<Row>::new(raw_rows_iter)
-        .map_err(|err| DeserializationError::new(err.0))?;
-
-    let rows = rows_iter.collect::<StdResult<_, _>>()?;
-
-    Ok(Rows {
+    Ok(RawRows {
         metadata,
         rows_count,
-        rows,
-        serialized_size: original_size - buf.len(),
+        raw_rows: buf_bytes.slice_ref(buf),
     })
 }
 
