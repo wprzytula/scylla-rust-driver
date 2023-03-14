@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use scylla::transport::errors::QueryError;
-use scylla::transport::session::LegacySession;
+use scylla::transport::session::Session;
 use scylla::SessionBuilder;
 use std::env;
 use std::time::Duration;
@@ -12,10 +12,10 @@ async fn main() -> Result<()> {
 
     println!("Connecting to {} ...", uri);
 
-    let session: LegacySession = SessionBuilder::new()
+    let session: Session = SessionBuilder::new()
         .known_node(uri)
         .schema_agreement_interval(Duration::from_secs(1)) // check every second for schema agreement if not agreed first check
-        .build_legacy()
+        .build()
         .await?;
 
     let schema_version = session.await_schema_agreement().await?;
@@ -69,7 +69,7 @@ async fn main() -> Result<()> {
     let result = session
         .query("SELECT a, b, c FROM examples_ks.schema_agreement", &[])
         .await?;
-    let mut iter = result.rows_typed::<(i32, i32, String)>()?;
+    let mut iter = result.rows::<(i32, i32, String)>()?;
     while let Some((a, b, c)) = iter.next().transpose()? {
         println!("a, b, c: {}, {}, {}", a, b, c);
     }
