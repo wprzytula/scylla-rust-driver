@@ -1,6 +1,8 @@
+use scylla_cql::frame::response::result::Row;
+
 #[cfg(test)]
 use crate::transport::session_builder::{GenericSessionBuilder, SessionBuilderKind};
-use crate::LegacySession;
+use crate::{LegacySession, Session};
 #[cfg(test)]
 use std::{num::NonZeroU32, time::Duration};
 use std::{
@@ -46,7 +48,13 @@ pub(crate) async fn supports_feature(session: &LegacySession, feature: &str) -> 
         .query_unpaged("SELECT supported_features FROM system.local", ())
         .await
         .unwrap()
-        .single_row_typed()
+        .rows_deserializer()
+        .unwrap()
+        .unwrap()
+        .rows_deserializer()
+        .unwrap()
+        .unwrap()
+        .single_row()
         .unwrap();
 
     features
@@ -104,6 +112,24 @@ pub async fn scylla_supports_tablets_legacy(session: &LegacySession) -> bool {
         .await
         .unwrap();
     result.single_row().is_ok()
+}
+
+pub async fn scylla_supports_tablets(session: &Session) -> bool {
+    let result = session
+        .query_unpaged(
+            "select column_name from system_schema.columns where
+                keyspace_name = 'system_schema'
+                and table_name = 'scylla_keyspaces'
+                and column_name = 'initial_tablets'",
+            &[],
+        )
+        .await
+        .unwrap();
+    result.rows_deserializer().map_or(false, |opt| {
+        opt.map_or(false, |deserializer| {
+            deserializer.single_row::<Row>().is_ok()
+        })
+    })
 }
 
 #[cfg(test)]
