@@ -1,4 +1,4 @@
-use scylla::{LegacySession, SessionBuilder};
+use scylla::{Session, SessionBuilder};
 use std::env;
 
 #[tokio::main]
@@ -7,11 +7,7 @@ async fn main() {
 
     println!("Connecting to {} ...", uri);
 
-    let session: LegacySession = SessionBuilder::new()
-        .known_node(uri)
-        .build_legacy()
-        .await
-        .unwrap();
+    let session: Session = SessionBuilder::new().known_node(uri).build().await.unwrap();
 
     session.query("CREATE KEYSPACE IF NOT EXISTS examples_ks WITH REPLICATION = {'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}", &[]).await.unwrap();
 
@@ -62,10 +58,14 @@ async fn main() {
         .await
         .unwrap();
 
-    let q = session
+    let rows = session
         .query("SELECT * FROM examples_ks.my_type", &[])
         .await
+        .unwrap()
+        .rows::<(i32, String)>()
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
         .unwrap();
 
-    println!("Q: {:?}", q.rows);
+    println!("Q: {:?}", rows);
 }

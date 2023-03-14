@@ -1,6 +1,7 @@
 use anyhow::Result;
-use scylla::macros::FromRow;
-use scylla::transport::session::LegacySession;
+use scylla::frame::response::result::Row;
+use scylla::transport::session::Session;
+use scylla::DeserializeRow;
 use scylla::SessionBuilder;
 use std::env;
 
@@ -10,7 +11,7 @@ async fn main() -> Result<()> {
 
     println!("Connecting to {} ...", uri);
 
-    let session: LegacySession = SessionBuilder::new().known_node(uri).build_legacy().await?;
+    let session: Session = SessionBuilder::new().known_node(uri).build().await?;
 
     session.query("CREATE KEYSPACE IF NOT EXISTS examples_ks WITH REPLICATION = {'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}", &[]).await?;
 
@@ -52,23 +53,24 @@ async fn main() -> Result<()> {
     let result = session
         .query("SELECT a, b, c FROM examples_ks.basic", &[])
         .await?;
-    let mut iter = result.rows_typed::<(i32, i32, String)>()?;
+    let mut iter = result.rows::<(i32, i32, String)>()?;
     while let Some((a, b, c)) = iter.next().transpose()? {
         println!("a, b, c: {}, {}, {}", a, b, c);
     }
 
-    // Or as custom structs that derive FromRow
-    #[derive(Debug, FromRow)]
+    // Or as custom structs that derive DeserializeRow
+    #[allow(unused)]
+    #[derive(Debug, DeserializeRow)]
     struct RowData {
-        _a: i32,
-        _b: Option<i32>,
-        _c: String,
+        a: i32,
+        b: Option<i32>,
+        c: String,
     }
 
     let result = session
         .query("SELECT a, b, c FROM examples_ks.basic", &[])
         .await?;
-    let mut iter = result.rows_typed::<RowData>()?;
+    let mut iter = result.rows::<RowData>()?;
     while let Some(row_data) = iter.next().transpose()? {
         println!("row_data: {:?}", row_data);
     }
@@ -77,15 +79,12 @@ async fn main() -> Result<()> {
     let result = session
         .query("SELECT a, b, c FROM examples_ks.basic", &[])
         .await?;
-    let rows = result.rows.unwrap();
-    for row in rows {
+    let mut iter = result.rows::<Row>()?;
+    while let Some(row) = iter.next().transpose()? {
         let a = row.columns[0].as_ref().unwrap().as_int().unwrap();
         let b = row.columns[1].as_ref().unwrap().as_int().unwrap();
         let c = row.columns[2].as_ref().unwrap().as_text().unwrap();
         println!("a, b, c: {}, {}, {}", a, b, c);
-
-        // Alternatively each row can be parsed individually
-        // let (a2, b2, c2) = row.into_typed::<(i32, i32, String)>() ?;
     }
 
     let metrics = session.get_metrics();
