@@ -4,7 +4,7 @@ use crate::query::Query;
 use crate::transport::errors::QueryError;
 use crate::transport::iterator::LegacyRowIterator;
 use crate::transport::partitioner::PartitionerName;
-use crate::{LegacyQueryResult, LegacySession};
+use crate::{LegacyQueryResult, QueryResult};
 use bytes::Bytes;
 use dashmap::DashMap;
 use futures::future::try_join_all;
@@ -13,6 +13,11 @@ use scylla_cql::types::serialize::batch::BatchValues;
 use scylla_cql::types::serialize::row::SerializeRow;
 use std::collections::hash_map::RandomState;
 use std::hash::BuildHasher;
+
+use super::iterator::RawIterator;
+use super::session::{
+    CurrentDeserializationApi, DeserializationApiKind, GenericSession, LegacyDeserializationApi,
+};
 
 /// Contains just the parts of a prepared statement that were returned
 /// from the database. All remaining parts (query string, page size,
@@ -29,11 +34,12 @@ struct RawPreparedStatementData {
 
 /// Provides auto caching while executing queries
 #[derive(Debug)]
-pub struct CachingSession<S = RandomState>
+pub struct GenericCachingSession<DeserializationApi, S = RandomState>
 where
     S: Clone + BuildHasher,
+    DeserializationApi: DeserializationApiKind,
 {
-    session: LegacySession,
+    session: GenericSession<DeserializationApi>,
     /// The prepared statement cache size
     /// If a prepared statement is added while the limit is reached, the oldest prepared statement
     /// is removed from the cache
@@ -41,11 +47,15 @@ where
     cache: DashMap<String, RawPreparedStatementData, S>,
 }
 
-impl<S> CachingSession<S>
+pub type CachingSession<S = RandomState> = GenericCachingSession<CurrentDeserializationApi, S>;
+pub type LegacyCachingSession<S = RandomState> = GenericCachingSession<LegacyDeserializationApi, S>;
+
+impl<DeserApi, S> GenericCachingSession<DeserApi, S>
 where
     S: Default + BuildHasher + Clone,
+    DeserApi: DeserializationApiKind,
 {
-    pub fn from(session: LegacySession, cache_size: usize) -> Self {
+    pub fn from(session: GenericSession<DeserApi>, cache_size: usize) -> Self {
         Self {
             session,
             max_capacity: cache_size,
@@ -54,20 +64,88 @@ where
     }
 }
 
-impl<S> CachingSession<S>
+impl<DeserApi, S> GenericCachingSession<DeserApi, S>
 where
     S: BuildHasher + Clone,
+    DeserApi: DeserializationApiKind,
 {
     /// Builds a [`CachingSession`] from a [`Session`], a cache size, and a [`BuildHasher`].,
     /// using a customer hasher.
-    pub fn with_hasher(session: LegacySession, cache_size: usize, hasher: S) -> Self {
+    pub fn with_hasher(session: GenericSession<DeserApi>, cache_size: usize, hasher: S) -> Self {
         Self {
             session,
             max_capacity: cache_size,
             cache: DashMap::with_hasher(hasher),
         }
     }
+}
 
+impl<S> GenericCachingSession<CurrentDeserializationApi, S>
+where
+    S: BuildHasher + Clone,
+{
+    /// Does the same thing as [`Session::execute`] but uses the prepared statement cache
+    pub async fn execute(
+        &self,
+        query: impl Into<Query>,
+        values: impl SerializeRow,
+    ) -> Result<QueryResult, QueryError> {
+        let query = query.into();
+        let prepared = self.add_prepared_statement_owned(query).await?;
+        self.session.execute(&prepared, values).await
+    }
+
+    /// Does the same thing as [`Session::execute_iter`] but uses the prepared statement cache
+    pub async fn execute_iter(
+        &self,
+        query: impl Into<Query>,
+        values: impl SerializeRow,
+    ) -> Result<RawIterator, QueryError> {
+        let query = query.into();
+        let prepared = self.add_prepared_statement_owned(query).await?;
+        self.session.execute_iter(prepared, values).await
+    }
+
+    /// Does the same thing as [`Session::execute_paged`] but uses the prepared statement cache
+    pub async fn execute_paged(
+        &self,
+        query: impl Into<Query>,
+        values: impl SerializeRow,
+        paging_state: Option<Bytes>,
+    ) -> Result<QueryResult, QueryError> {
+        let query = query.into();
+        let prepared = self.add_prepared_statement_owned(query).await?;
+        self.session
+            .execute_paged(&prepared, values, paging_state.clone())
+            .await
+    }
+
+    /// Does the same thing as [`Session::batch`] but uses the prepared statement cache\
+    /// Prepares batch using CachingSession::prepare_batch if needed and then executes it
+    pub async fn batch(
+        &self,
+        batch: &Batch,
+        values: impl BatchValues,
+    ) -> Result<QueryResult, QueryError> {
+        let all_prepared: bool = batch
+            .statements
+            .iter()
+            .all(|stmt| matches!(stmt, BatchStatement::PreparedStatement(_)));
+
+        if all_prepared {
+            self.session.batch(batch, &values).await
+        } else {
+            let prepared_batch: Batch = self.prepare_batch(batch).await?;
+
+            self.session.batch(&prepared_batch, &values).await
+        }
+    }
+}
+
+impl<S> GenericCachingSession<LegacyDeserializationApi, S>
+where
+    S: BuildHasher + Clone,
+{
     /// Does the same thing as [`Session::execute`] but uses the prepared statement cache
     pub async fn execute(
         &self,
@@ -124,7 +202,13 @@ where
             self.session.batch(&prepared_batch, &values).await
         }
     }
+}
 
+impl<DeserApi, S> GenericCachingSession<DeserApi, S>
+where
+    S: BuildHasher + Clone,
+    DeserApi: DeserializationApiKind,
+{
     /// Prepares all statements within the batch and returns a new batch where every
     /// statement is prepared.
     /// Uses the prepared statements cache.
@@ -210,7 +294,7 @@ where
         self.max_capacity
     }
 
-    pub fn get_session(&self) -> &LegacySession {
+    pub fn get_session(&self) -> &GenericSession<DeserApi> {
         &self.session
     }
 }
@@ -226,7 +310,7 @@ mod tests {
     use crate::{
         batch::{Batch, BatchStatement},
         prepared_statement::PreparedStatement,
-        CachingSession, LegacySession,
+        LegacyCachingSession, LegacySession,
     };
     use futures::TryStreamExt;
     use std::collections::BTreeSet;
@@ -270,8 +354,8 @@ mod tests {
         session
     }
 
-    async fn create_caching_session() -> CachingSession {
-        let session = CachingSession::from(new_for_test(true).await, 2);
+    async fn create_caching_session() -> LegacyCachingSession {
+        let session = LegacyCachingSession::from(new_for_test(true).await, 2);
 
         // Add a row, this makes it easier to check if the caching works combined with the regular execute fn on Session
         session
@@ -382,7 +466,7 @@ mod tests {
     }
 
     async fn assert_test_batch_table_rows_contain(
-        sess: &CachingSession,
+        sess: &LegacyCachingSession,
         expected_rows: &[(i32, i32)],
     ) {
         let selected_rows: BTreeSet<(i32, i32)> = sess
@@ -428,18 +512,18 @@ mod tests {
             }
         }
 
-        let _session: CachingSession<std::collections::hash_map::RandomState> =
-            CachingSession::from(new_for_test(true).await, 2);
-        let _session: CachingSession<CustomBuildHasher> =
-            CachingSession::from(new_for_test(true).await, 2);
-        let _session: CachingSession<CustomBuildHasher> =
-            CachingSession::with_hasher(new_for_test(true).await, 2, Default::default());
+        let _session: LegacyCachingSession<std::collections::hash_map::RandomState> =
+            LegacyCachingSession::from(new_for_test(true).await, 2);
+        let _session: LegacyCachingSession<CustomBuildHasher> =
+            LegacyCachingSession::from(new_for_test(true).await, 2);
+        let _session: LegacyCachingSession<CustomBuildHasher> =
+            LegacyCachingSession::with_hasher(new_for_test(true).await, 2, Default::default());
     }
 
     #[tokio::test]
     async fn test_batch() {
         setup_tracing();
-        let session: CachingSession = create_caching_session().await;
+        let session: LegacyCachingSession = create_caching_session().await;
 
         session
             .execute(
@@ -562,7 +646,8 @@ mod tests {
     #[tokio::test]
     async fn test_parameters_caching() {
         setup_tracing();
-        let session: CachingSession = CachingSession::from(new_for_test(true).await, 100);
+        let session: LegacyCachingSession =
+            LegacyCachingSession::from(new_for_test(true).await, 100);
 
         session
             .execute("CREATE TABLE tbl (a int PRIMARY KEY, b int)", ())
@@ -615,7 +700,8 @@ mod tests {
         }
 
         // This test uses CDC which is not yet compatible with Scylla's tablets.
-        let session: CachingSession = CachingSession::from(new_for_test(false).await, 100);
+        let session: LegacyCachingSession =
+            LegacyCachingSession::from(new_for_test(false).await, 100);
 
         session
             .execute(

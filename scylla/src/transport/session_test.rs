@@ -20,8 +20,8 @@ use crate::transport::topology::{
 use crate::utils::test_utils::{
     create_new_session_builder, supports_feature, unique_keyspace_name,
 };
-use crate::CachingSession;
 use crate::ExecutionProfile;
+use crate::LegacyCachingSession;
 use crate::LegacyQueryResult;
 use crate::{LegacySession, SessionBuilder};
 use assert_matches::assert_matches;
@@ -1960,7 +1960,7 @@ async fn rename(session: &LegacySession, rename_str: &str) {
         .unwrap();
 }
 
-async fn rename_caching(session: &CachingSession, rename_str: &str) {
+async fn rename_caching(session: &LegacyCachingSession, rename_str: &str) {
     session
         .execute(format!("ALTER TABLE tab RENAME {}", rename_str), &())
         .await
@@ -2163,7 +2163,7 @@ async fn test_unprepared_reprepare_in_caching_session_execute() {
     session.query(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
     session.use_keyspace(ks, false).await.unwrap();
 
-    let caching_session: CachingSession = CachingSession::from(session, 64);
+    let caching_session: LegacyCachingSession = LegacyCachingSession::from(session, 64);
 
     caching_session
         .execute(
