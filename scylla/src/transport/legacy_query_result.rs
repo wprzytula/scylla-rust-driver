@@ -10,7 +10,7 @@ use uuid::Uuid;
 /// Contains all rows returned by the database and some more information
 #[non_exhaustive]
 #[derive(Default, Debug)]
-pub struct QueryResult {
+pub struct LegacyQueryResult {
     /// Rows returned by the database.\
     /// Queries like `SELECT` will have `Some(Vec)`, while queries like `INSERT` will have `None`.\
     /// Can contain an empty Vec.
@@ -27,7 +27,7 @@ pub struct QueryResult {
     pub serialized_size: usize,
 }
 
-impl QueryResult {
+impl LegacyQueryResult {
     /// Returns the number of received rows.\
     /// Fails when the query isn't of a type that could return rows, same as [`rows()`](QueryResult::rows).
     pub fn rows_num(&self) -> Result<usize, RowsExpectedError> {
@@ -294,7 +294,7 @@ mod tests {
         rows
     }
 
-    fn make_not_rows_query_result() -> QueryResult {
+    fn make_not_rows_query_result() -> LegacyQueryResult {
         let table_spec = TableSpec::owned("some_keyspace".to_string(), "some_table".to_string());
 
         let column_spec = ColumnSpec {
@@ -303,7 +303,7 @@ mod tests {
             typ: ColumnType::Int,
         };
 
-        QueryResult {
+        LegacyQueryResult {
             rows: None,
             warnings: vec![],
             tracing_id: None,
@@ -313,13 +313,13 @@ mod tests {
         }
     }
 
-    fn make_rows_query_result(rows_num: usize) -> QueryResult {
+    fn make_rows_query_result(rows_num: usize) -> LegacyQueryResult {
         let mut res = make_not_rows_query_result();
         res.rows = Some(make_rows(rows_num));
         res
     }
 
-    fn make_string_rows_query_result(rows_num: usize) -> QueryResult {
+    fn make_string_rows_query_result(rows_num: usize) -> LegacyQueryResult {
         let mut res = make_not_rows_query_result();
         res.rows = Some(make_string_rows(rows_num));
         res

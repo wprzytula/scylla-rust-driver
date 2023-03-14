@@ -22,7 +22,7 @@ use crate::utils::test_utils::{
 };
 use crate::CachingSession;
 use crate::ExecutionProfile;
-use crate::QueryResult;
+use crate::LegacyQueryResult;
 use crate::{Session, SessionBuilder};
 use assert_matches::assert_matches;
 use bytes::Bytes;
@@ -935,7 +935,8 @@ async fn test_tracing() {
 async fn test_tracing_query(session: &Session, ks: String) {
     // A query without tracing enabled has no tracing uuid in result
     let untraced_query: Query = Query::new(format!("SELECT * FROM {}.tab", ks));
-    let untraced_query_result: QueryResult = session.query(untraced_query, &[]).await.unwrap();
+    let untraced_query_result: LegacyQueryResult =
+        session.query(untraced_query, &[]).await.unwrap();
 
     assert!(untraced_query_result.tracing_id.is_none());
 
@@ -943,7 +944,7 @@ async fn test_tracing_query(session: &Session, ks: String) {
     let mut traced_query: Query = Query::new(format!("SELECT * FROM {}.tab", ks));
     traced_query.config.tracing = true;
 
-    let traced_query_result: QueryResult = session.query(traced_query, &[]).await.unwrap();
+    let traced_query_result: LegacyQueryResult = session.query(traced_query, &[]).await.unwrap();
     assert!(traced_query_result.tracing_id.is_some());
 
     // Querying this uuid from tracing table gives some results
@@ -957,7 +958,7 @@ async fn test_tracing_execute(session: &Session, ks: String) {
         .await
         .unwrap();
 
-    let untraced_prepared_result: QueryResult =
+    let untraced_prepared_result: LegacyQueryResult =
         session.execute(&untraced_prepared, &[]).await.unwrap();
 
     assert!(untraced_prepared_result.tracing_id.is_none());
@@ -970,7 +971,8 @@ async fn test_tracing_execute(session: &Session, ks: String) {
 
     traced_prepared.config.tracing = true;
 
-    let traced_prepared_result: QueryResult = session.execute(&traced_prepared, &[]).await.unwrap();
+    let traced_prepared_result: LegacyQueryResult =
+        session.execute(&traced_prepared, &[]).await.unwrap();
     assert!(traced_prepared_result.tracing_id.is_some());
 
     // Querying this uuid from tracing table gives some results
@@ -1004,7 +1006,7 @@ async fn test_get_tracing_info(session: &Session, ks: String) {
     let mut traced_query: Query = Query::new(format!("SELECT * FROM {}.tab", ks));
     traced_query.config.tracing = true;
 
-    let traced_query_result: QueryResult = session.query(traced_query, &[]).await.unwrap();
+    let traced_query_result: LegacyQueryResult = session.query(traced_query, &[]).await.unwrap();
     let tracing_id: Uuid = traced_query_result.tracing_id.unwrap();
 
     // Getting tracing info from session using this uuid works
@@ -1094,7 +1096,8 @@ async fn test_tracing_batch(session: &Session, ks: String) {
     let mut untraced_batch: Batch = Default::default();
     untraced_batch.append_statement(&format!("INSERT INTO {}.tab (a) VALUES('a')", ks)[..]);
 
-    let untraced_batch_result: QueryResult = session.batch(&untraced_batch, ((),)).await.unwrap();
+    let untraced_batch_result: LegacyQueryResult =
+        session.batch(&untraced_batch, ((),)).await.unwrap();
     assert!(untraced_batch_result.tracing_id.is_none());
 
     // Batch with tracing enabled has a tracing uuid in result
@@ -1102,7 +1105,7 @@ async fn test_tracing_batch(session: &Session, ks: String) {
     traced_batch.append_statement(&format!("INSERT INTO {}.tab (a) VALUES('a')", ks)[..]);
     traced_batch.config.tracing = true;
 
-    let traced_batch_result: QueryResult = session.batch(&traced_batch, ((),)).await.unwrap();
+    let traced_batch_result: LegacyQueryResult = session.batch(&traced_batch, ((),)).await.unwrap();
     assert!(traced_batch_result.tracing_id.is_some());
 
     assert_in_tracing_table(session, traced_batch_result.tracing_id.unwrap()).await;
@@ -2500,7 +2503,7 @@ async fn test_batch_lwts() {
     batch.append_statement("INSERT INTO tab (p1, c1, r1, r2) VALUES (0, 123, 321, 312)");
     batch.append_statement("UPDATE tab SET r1 = 1 WHERE p1 = 0 AND c1 = 0 IF r2 = 0");
 
-    let batch_res: QueryResult = session.batch(&batch, ((), (), ())).await.unwrap();
+    let batch_res: LegacyQueryResult = session.batch(&batch, ((), (), ())).await.unwrap();
 
     // Scylla returns 5 columns, but Cassandra returns only 1
     let is_scylla: bool = batch_res.col_specs.len() == 5;
@@ -2512,7 +2515,11 @@ async fn test_batch_lwts() {
     }
 }
 
-async fn test_batch_lwts_for_scylla(session: &Session, batch: &Batch, batch_res: QueryResult) {
+async fn test_batch_lwts_for_scylla(
+    session: &Session,
+    batch: &Batch,
+    batch_res: LegacyQueryResult,
+) {
     // Alias required by clippy
     type IntOrNull = Option<i32>;
 
@@ -2533,7 +2540,7 @@ async fn test_batch_lwts_for_scylla(session: &Session, batch: &Batch, batch_res:
     assert_eq!(batch_res_rows, expected_batch_res_rows);
 
     let prepared_batch: Batch = session.prepare_batch(batch).await.unwrap();
-    let prepared_batch_res: QueryResult =
+    let prepared_batch_res: LegacyQueryResult =
         session.batch(&prepared_batch, ((), (), ())).await.unwrap();
 
     let prepared_batch_res_rows: Vec<(bool, IntOrNull, IntOrNull, IntOrNull, IntOrNull)> =
@@ -2552,7 +2559,11 @@ async fn test_batch_lwts_for_scylla(session: &Session, batch: &Batch, batch_res:
     assert_eq!(prepared_batch_res_rows, expected_prepared_batch_res_rows);
 }
 
-async fn test_batch_lwts_for_cassandra(session: &Session, batch: &Batch, batch_res: QueryResult) {
+async fn test_batch_lwts_for_cassandra(
+    session: &Session,
+    batch: &Batch,
+    batch_res: LegacyQueryResult,
+) {
     // Alias required by clippy
     type IntOrNull = Option<i32>;
 
@@ -2569,7 +2580,7 @@ async fn test_batch_lwts_for_cassandra(session: &Session, batch: &Batch, batch_r
     assert_eq!(batch_res_rows, expected_batch_res_rows);
 
     let prepared_batch: Batch = session.prepare_batch(batch).await.unwrap();
-    let prepared_batch_res: QueryResult =
+    let prepared_batch_res: LegacyQueryResult =
         session.batch(&prepared_batch, ((), (), ())).await.unwrap();
 
     // Returned columns are:

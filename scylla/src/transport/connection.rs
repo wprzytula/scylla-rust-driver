@@ -42,8 +42,8 @@ use std::{
 
 use super::errors::{BadKeyspaceName, DbError, QueryError};
 use super::iterator::RowIterator;
+use super::legacy_query_result::SingleRowTypedError;
 use super::locator::tablets::{RawTablet, TabletParsingError};
-use super::query_result::SingleRowTypedError;
 use super::session::AddressTranslator;
 use super::topology::{PeerEndpoint, UntranslatedEndpoint, UntranslatedPeer};
 use super::NodeAddr;
@@ -64,7 +64,10 @@ use crate::routing::ShardInfo;
 use crate::statement::prepared_statement::PreparedStatement;
 use crate::statement::Consistency;
 use crate::transport::Compression;
-use crate::QueryResult;
+
+// Existing code imports scylla::transport::connection::QueryResult because it used to be located in this file.
+// Reexport QueryResult to avoid breaking the existing code.
+use crate::LegacyQueryResult;
 
 // Queries for schema agreement
 const LOCAL_VERSION: &str = "SELECT schema_version FROM system.local WHERE key='local'";
@@ -237,7 +240,7 @@ impl QueryResponse {
         })
     }
 
-    pub(crate) fn into_query_result(self) -> Result<QueryResult, QueryError> {
+    pub(crate) fn into_query_result(self) -> Result<LegacyQueryResult, QueryError> {
         self.into_non_error_query_response()?.into_query_result()
     }
 }
@@ -257,7 +260,7 @@ impl NonErrorQueryResponse {
         }
     }
 
-    pub(crate) fn into_query_result(self) -> Result<QueryResult, QueryError> {
+    pub(crate) fn into_query_result(self) -> Result<LegacyQueryResult, QueryError> {
         let (rows, paging_state, col_specs, serialized_size) = match self.response {
             NonErrorResponse::Result(result::Result::Rows(rs)) => (
                 Some(rs.rows),
@@ -273,7 +276,7 @@ impl NonErrorQueryResponse {
             }
         };
 
-        Ok(QueryResult {
+        Ok(LegacyQueryResult {
             rows,
             warnings: self.warnings,
             tracing_id: self.tracing_id,
@@ -801,7 +804,7 @@ impl Connection {
     pub(crate) async fn query_single_page(
         &self,
         query: impl Into<Query>,
-    ) -> Result<QueryResult, QueryError> {
+    ) -> Result<LegacyQueryResult, QueryError> {
         let query: Query = query.into();
 
         // This method is used only for driver internal queries, so no need to consult execution profile here.
@@ -819,7 +822,7 @@ impl Connection {
         query: impl Into<Query>,
         consistency: Consistency,
         serial_consistency: Option<SerialConsistency>,
-    ) -> Result<QueryResult, QueryError> {
+    ) -> Result<LegacyQueryResult, QueryError> {
         let query: Query = query.into();
         self.query_with_consistency(&query, consistency, serial_consistency, None)
             .await?
@@ -1005,7 +1008,7 @@ impl Connection {
         &self,
         batch: &Batch,
         values: impl BatchValues,
-    ) -> Result<QueryResult, QueryError> {
+    ) -> Result<LegacyQueryResult, QueryError> {
         self.batch_with_consistency(
             batch,
             values,
@@ -1023,7 +1026,7 @@ impl Connection {
         values: impl BatchValues,
         consistency: Consistency,
         serial_consistency: Option<SerialConsistency>,
-    ) -> Result<QueryResult, QueryError> {
+    ) -> Result<LegacyQueryResult, QueryError> {
         let batch = self.prepare_batch(init_batch, &values).await?;
 
         let contexts = batch.statements.iter().map(|bs| match bs {
