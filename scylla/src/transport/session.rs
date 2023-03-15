@@ -152,7 +152,7 @@ impl AddressTranslator for HashMap<&'static str, &'static str> {
 }
 
 /// `Session` manages connections to the cluster and allows to perform queries
-pub struct Session {
+pub struct LegacySession {
     cluster: Cluster,
     default_execution_profile_handle: ExecutionProfileHandle,
     schema_agreement_interval: Duration,
@@ -168,7 +168,7 @@ pub struct Session {
 
 /// This implementation deliberately omits some details from Cluster in order
 /// to avoid cluttering the print with much information of little usability.
-impl std::fmt::Debug for Session {
+impl std::fmt::Debug for LegacySession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Session")
             .field("cluster", &ClusterNeatDebug(&self.cluster))
@@ -464,8 +464,8 @@ pub(crate) enum RunQueryResult<ResT> {
 
 /// Represents a CQL session, which can be used to communicate
 /// with the database
-impl Session {
-    /// Establishes a CQL session with the database
+impl LegacySession {
+    /// Estabilishes a CQL session with the database
     ///
     /// Usually it's easier to use [SessionBuilder](crate::transport::session_builder::SessionBuilder)
     /// instead of calling `Session::connect` directly, because it's more convenient.
@@ -477,17 +477,17 @@ impl Session {
     /// ```rust
     /// # use std::error::Error;
     /// # async fn check_only_compiles() -> Result<(), Box<dyn Error>> {
-    /// use scylla::{Session, SessionConfig};
+    /// use scylla::{LegacySession, SessionConfig};
     /// use scylla::transport::KnownNode;
     ///
     /// let mut config = SessionConfig::new();
     /// config.known_nodes.push(KnownNode::Hostname("127.0.0.1:9042".to_string()));
     ///
-    /// let session: Session = Session::connect(config).await?;
+    /// let session: LegacySession = LegacySession::connect(config).await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn connect(config: SessionConfig) -> Result<Session, NewSessionError> {
+    pub async fn connect(config: SessionConfig) -> Result<LegacySession, NewSessionError> {
         let known_nodes = config.known_nodes;
 
         #[cfg(feature = "cloud")]
@@ -556,7 +556,7 @@ impl Session {
 
         let default_execution_profile_handle = config.default_execution_profile_handle;
 
-        let session = Session {
+        let session = LegacySession {
             cluster,
             default_execution_profile_handle,
             schema_agreement_interval: config.schema_agreement_interval,
@@ -602,9 +602,9 @@ impl Session {
     ///
     /// # Examples
     /// ```rust
-    /// # use scylla::Session;
+    /// # use scylla::LegacySession;
     /// # use std::error::Error;
-    /// # async fn check_only_compiles(session: &Session) -> Result<(), Box<dyn Error>> {
+    /// # async fn check_only_compiles(session: &LegacySession) -> Result<(), Box<dyn Error>> {
     /// // Insert an int and text into a table.
     /// session
     ///     .query_unpaged(
@@ -616,9 +616,9 @@ impl Session {
     /// # }
     /// ```
     /// ```rust
-    /// # use scylla::Session;
+    /// # use scylla::LegacySession;
     /// # use std::error::Error;
-    /// # async fn check_only_compiles(session: &Session) -> Result<(), Box<dyn Error>> {
+    /// # async fn check_only_compiles(session: &LegacySession) -> Result<(), Box<dyn Error>> {
     /// use scylla::IntoTypedRows;
     ///
     /// // Read rows containing an int and text.
@@ -670,9 +670,9 @@ impl Session {
     /// # Example
     ///
     /// ```rust
-    /// # use scylla::Session;
+    /// # use scylla::LegacySession;
     /// # use std::error::Error;
-    /// # async fn check_only_compiles(session: &Session) -> Result<(), Box<dyn Error>> {
+    /// # async fn check_only_compiles(session: &LegacySession) -> Result<(), Box<dyn Error>> {
     /// use std::ops::ControlFlow;
     /// use scylla::statement::PagingState;
     ///
@@ -881,9 +881,9 @@ impl Session {
     /// # Example
     ///
     /// ```rust
-    /// # use scylla::Session;
+    /// # use scylla::LegacySession;
     /// # use std::error::Error;
-    /// # async fn check_only_compiles(session: &Session) -> Result<(), Box<dyn Error>> {
+    /// # async fn check_only_compiles(session: &LegacySession) -> Result<(), Box<dyn Error>> {
     /// use scylla::IntoTypedRows;
     /// use futures::stream::StreamExt;
     ///
@@ -958,9 +958,9 @@ impl Session {
     ///
     /// # Example
     /// ```rust
-    /// # use scylla::Session;
+    /// # use scylla::LegacySession;
     /// # use std::error::Error;
-    /// # async fn check_only_compiles(session: &Session) -> Result<(), Box<dyn Error>> {
+    /// # async fn check_only_compiles(session: &LegacySession) -> Result<(), Box<dyn Error>> {
     /// use scylla::prepared_statement::PreparedStatement;
     ///
     /// // Prepare the query for later execution
@@ -1057,9 +1057,9 @@ impl Session {
     ///
     /// # Example
     /// ```rust
-    /// # use scylla::Session;
+    /// # use scylla::LegacySession;
     /// # use std::error::Error;
-    /// # async fn check_only_compiles(session: &Session) -> Result<(), Box<dyn Error>> {
+    /// # async fn check_only_compiles(session: &LegacySession) -> Result<(), Box<dyn Error>> {
     /// use scylla::prepared_statement::PreparedStatement;
     ///
     /// // Prepare the query for later execution
@@ -1101,9 +1101,9 @@ impl Session {
     /// # Example
     ///
     /// ```rust
-    /// # use scylla::Session;
+    /// # use scylla::LegacySession;
     /// # use std::error::Error;
-    /// # async fn check_only_compiles(session: &Session) -> Result<(), Box<dyn Error>> {
+    /// # async fn check_only_compiles(session: &LegacySession) -> Result<(), Box<dyn Error>> {
     /// use std::ops::ControlFlow;
     /// use scylla::query::Query;
     /// use scylla::statement::{PagingState, PagingStateResponse};
@@ -1279,9 +1279,9 @@ impl Session {
     /// # Example
     ///
     /// ```rust
-    /// # use scylla::Session;
+    /// # use scylla::LegacySession;
     /// # use std::error::Error;
-    /// # async fn check_only_compiles(session: &Session) -> Result<(), Box<dyn Error>> {
+    /// # async fn check_only_compiles(session: &LegacySession) -> Result<(), Box<dyn Error>> {
     /// use scylla::prepared_statement::PreparedStatement;
     /// use scylla::IntoTypedRows;
     /// use futures::stream::StreamExt;
@@ -1347,9 +1347,9 @@ impl Session {
     ///
     /// # Example
     /// ```rust
-    /// # use scylla::Session;
+    /// # use scylla::LegacySession;
     /// # use std::error::Error;
-    /// # async fn check_only_compiles(session: &Session) -> Result<(), Box<dyn Error>> {
+    /// # async fn check_only_compiles(session: &LegacySession) -> Result<(), Box<dyn Error>> {
     /// use scylla::batch::Batch;
     ///
     /// let mut batch: Batch = Default::default();
@@ -1465,9 +1465,9 @@ impl Session {
     /// /// # Example
     /// ```rust
     /// # extern crate scylla;
-    /// # use scylla::Session;
+    /// # use scylla::LegacySession;
     /// # use std::error::Error;
-    /// # async fn check_only_compiles(session: &Session) -> Result<(), Box<dyn Error>> {
+    /// # async fn check_only_compiles(session: &LegacySession) -> Result<(), Box<dyn Error>> {
     /// use scylla::batch::Batch;
     ///
     /// // Create a batch statement with unprepared statements
@@ -1526,7 +1526,7 @@ impl Session {
     /// * `case_sensitive` - if set to true the generated query will put keyspace name in quotes
     /// # Example
     /// ```rust
-    /// # use scylla::{Session, SessionBuilder};
+    /// # use scylla::{LegacySession, SessionBuilder};
     /// # use scylla::transport::Compression;
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// # let session = SessionBuilder::new().known_node("127.0.0.1:9042").build().await?;
