@@ -1,4 +1,6 @@
-use crate::frame::response::result::ColumnSpec;
+use bytes::Bytes;
+
+use crate::frame::response::result::{ColumnSpec, RawRows, ResultMetadata};
 
 use super::row::{mk_deser_err, BuiltinDeserializationErrorKind, ColumnIterator, DeserializeRow};
 use super::{DeserializationError, FrameSlice, TypeCheckError};
@@ -127,6 +129,110 @@ where
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.inner.size_hint()
+    }
+}
+
+// Technically not an iterator because it returns items that borrow from it,
+// and the std Iterator interface does not allow for that.
+/// A _lending_ iterator over serialized rows.
+///
+/// This type is similar to `RowIterator`, but keeps ownership of the serialized
+/// result. Because it returns `ColumnIterator`s that need to borrow from it,
+/// it does not implement the `Iterator` trait (there is no type in the standard
+/// library to represent this concept yet).
+#[derive(Debug)]
+pub struct RawRowsLendingIterator {
+    metadata: ResultMetadata,
+    remaining: usize,
+    at: usize,
+    raw_rows: Bytes,
+}
+
+impl RawRowsLendingIterator {
+    /// Creates a new `RawRowsLendingIterator`, consuming given `RawRows`.
+    #[inline]
+    pub fn new(raw_rows: RawRows) -> Self {
+        let (metadata, rows_count, raw_rows) = raw_rows.into_inner();
+        Self {
+            metadata,
+            remaining: rows_count,
+            at: 0,
+            raw_rows,
+        }
+    }
+
+    /// Returns a `ColumnIterator` that represents the next row.
+    ///
+    /// Note: the `ColumnIterator` borrows from the `RawRowsLendingIterator`.
+    /// The column iterator must be consumed before the rows iterator can
+    /// continue.
+    #[inline]
+    #[allow(clippy::should_implement_trait)] // https://github.com/rust-lang/rust-clippy/issues/5004
+    pub fn next(&mut self) -> Option<Result<ColumnIterator, DeserializationError>> {
+        self.remaining = self.remaining.checked_sub(1)?;
+
+        // First create the slice encompassing the whole frame.
+        let mut remaining_frame = FrameSlice::new(&self.raw_rows);
+        // Then slice it to encompass the remaining suffix of the frame.
+        *remaining_frame.as_slice_mut() = &remaining_frame.as_slice()[self.at..];
+        // Ideally, we would prefer to preserve the FrameSlice between calls to `next()`,
+        // but borrowing from oneself is impossible, so we have to recreate it this way.
+
+        /* RowIterator code begins */
+        let iter = ColumnIterator::new(&self.metadata.col_specs, remaining_frame);
+
+        // Skip the row here, manually
+        for (column_index, spec) in self.metadata.col_specs.iter().enumerate() {
+            if let Err(err) = remaining_frame.read_cql_bytes() {
+                return Some(Err(mk_deser_err::<Self>(
+                    BuiltinDeserializationErrorKind::RawColumnDeserializationFailed {
+                        column_index,
+                        column_name: spec.name.clone(),
+                        err: DeserializationError::new(err),
+                    },
+                )));
+            }
+        }
+
+        Some(Ok(iter))
+        /* RowIterator code ends */
+
+        /* Old RawRowsLendingIterator code */
+        /*
+        let mut mem = &self.raw_rows[self.at..];
+
+        // Skip the row here, manually
+        for _ in 0..self.metadata.col_specs.len() {
+            if let Err(err) = types::read_bytes_opt(&mut mem) {
+                return Some(Err(err));
+            }
+        }
+
+        let slice = FrameSlice::new_subslice(&self.raw_rows[self.at..], &self.raw_rows);
+        let iter = ColumnIterator::new(&self.metadata.col_specs, slice);
+        self.at = self.raw_rows.len() - mem.len();
+        Some(Ok(iter))
+        */
+        /* End RawRowsLendingIterator code */
+    }
+
+    #[inline]
+    pub fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, Some(self.remaining))
+    }
+
+    /// Returns the metadata associated with the response (paging state and
+    /// column specifications).
+    #[inline]
+    pub fn metadata(&self) -> &ResultMetadata {
+        &self.metadata
+    }
+
+    /// Returns the remaining number of rows that this iterator is expected
+    /// to produce.
+    #[inline]
+    pub fn rows_remaining(&self) -> usize {
+        self.remaining
     }
 }
 

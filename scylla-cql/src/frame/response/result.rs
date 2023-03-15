@@ -5,10 +5,11 @@ use crate::frame::value::{
 };
 use crate::frame::{frame_errors::ParseError, types};
 use crate::types::deserialize::result::{RowIterator, TypedRowIterator};
+use crate::types::deserialize::row::DeserializeRow;
 use crate::types::deserialize::value::{
     mk_deser_err, BuiltinDeserializationErrorKind, DeserializeValue, MapIterator, UdtIterator,
 };
-use crate::types::deserialize::{DeserializationError, FrameSlice};
+use crate::types::deserialize::{DeserializationError, FrameSlice, TypeCheckError};
 use bytes::{Buf, Bytes};
 use std::borrow::Cow;
 use std::{convert::TryInto, net::IpAddr, result::Result as StdResult, str};
@@ -456,6 +457,72 @@ impl Row {
     /// Allows converting Row into tuple of rust types or custom struct deriving FromRow
     pub fn into_typed<RowT: FromRow>(self) -> StdResult<RowT, FromRowError> {
         RowT::from_row(self)
+    }
+}
+
+/// Rows response, in partially serialized form.
+// TODO: We could provide ResultMetadata in a similar, lazily
+// deserialized form - now it can be a source of allocations
+#[derive(Debug, Default)]
+pub struct RawRows {
+    metadata: ResultMetadata,
+    rows_count: usize,
+    raw_rows: Bytes,
+}
+
+impl RawRows {
+    /// Returns the metadata associated with this response (paging state
+    /// and column specifications).
+    #[inline]
+    pub fn metadata(&self) -> &ResultMetadata {
+        &self.metadata
+    }
+
+    /// Consumes the `RawRows` and returns metadata associated with the
+    /// response.
+    #[inline]
+    pub(crate) fn into_inner(self) -> (ResultMetadata, usize, Bytes) {
+        (self.metadata, self.rows_count, self.raw_rows)
+    }
+
+    /// Returns the number of rows that these `RawRows` contain.
+    #[inline]
+    pub fn rows_count(&self) -> usize {
+        self.rows_count
+    }
+
+    /// Returns the serialized size of the `RawRows`.
+    #[inline]
+    pub fn rows_size(&self) -> usize {
+        self.raw_rows.len()
+    }
+
+    /// Creates a typed iterator over the rows that lazily deserializes
+    /// rows in the result.
+    ///
+    /// Returns Err if the schema of returned result doesn't match R.
+    #[inline]
+    pub fn rows_iter<'r, R: DeserializeRow<'r>>(
+        &'r self,
+    ) -> StdResult<TypedRowIterator<'r, R>, TypeCheckError> {
+        let slice = FrameSlice::new(&self.raw_rows);
+        let raw = RowIterator::new(self.rows_count, &self.metadata.col_specs, slice);
+        TypedRowIterator::new(raw)
+    }
+
+    /// Converts the `RawRows` into `Rows` - a legacy, inefficient representation.
+    ///
+    /// Provided only to make migration to the new deserialization API
+    /// more convenient - this function will be deprecated and removed
+    /// in future releases.
+    pub fn into_legacy_rows(self) -> StdResult<Rows, ParseError> {
+        let rows = self.rows_iter::<Row>()?.collect::<StdResult<_, _>>()?;
+        Ok(Rows {
+            metadata: self.metadata,
+            rows_count: self.rows_count,
+            rows,
+            serialized_size: self.raw_rows.len(),
+        })
     }
 }
 
