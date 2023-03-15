@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use scylla::transport::errors::QueryError;
-use scylla::transport::session::Session;
+use scylla::transport::session::LegacySession;
 use scylla::SessionBuilder;
 use std::env;
 use std::time::Duration;
@@ -12,7 +12,7 @@ async fn main() -> Result<()> {
 
     println!("Connecting to {} ...", uri);
 
-    let session: Session = SessionBuilder::new()
+    let session: LegacySession = SessionBuilder::new()
         .known_node(uri)
         .schema_agreement_interval(Duration::from_secs(1)) // check every second for schema agreement if not agreed first check
         .build()
