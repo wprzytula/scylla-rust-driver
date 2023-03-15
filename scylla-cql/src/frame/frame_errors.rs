@@ -311,6 +311,8 @@ pub enum PreparedParseError {
 #[non_exhaustive]
 #[derive(Debug, Error, Clone)]
 pub enum RowsParseError {
+    #[error("Result metadata absent when requested (not being cached in driver)")]
+    MetadataAbsent,
     #[error("Invalid result metadata: {0}")]
     ResultMetadataParseError(#[from] ResultMetadataParseError),
     #[error("Invalid result metadata, server claims {col_count} columns, received {col_specs_count} col specs.")]
