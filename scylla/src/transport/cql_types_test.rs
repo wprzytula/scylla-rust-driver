@@ -19,7 +19,7 @@ use std::str::FromStr;
 // Creates a new keyspace
 // Drops and creates table {table_name} (id int PRIMARY KEY, val {type_name})
 async fn init_test(table_name: &str, type_name: &str) -> LegacySession {
-    let session: LegacySession = create_new_session_builder().build().await.unwrap();
+    let session: LegacySession = create_new_session_builder().build_legacy().await.unwrap();
     let ks = unique_keyspace_name();
 
     session
@@ -157,7 +157,7 @@ async fn test_cql_varint() {
     ];
 
     let table_name = "cql_varint_tests";
-    let session: LegacySession = create_new_session_builder().build().await.unwrap();
+    let session: LegacySession = create_new_session_builder().build_legacy().await.unwrap();
     let ks = unique_keyspace_name();
 
     session
@@ -1223,7 +1223,7 @@ async fn test_timeuuid() {
 #[tokio::test]
 async fn test_timeuuid_ordering() {
     setup_tracing();
-    let session: LegacySession = create_new_session_builder().build().await.unwrap();
+    let session: LegacySession = create_new_session_builder().build_legacy().await.unwrap();
     let ks = unique_keyspace_name();
 
     session
@@ -1452,7 +1452,7 @@ async fn test_udt_after_schema_update() {
     let table_name = "udt_tests";
     let type_name = "usertype1";
 
-    let session: LegacySession = create_new_session_builder().build().await.unwrap();
+    let session: LegacySession = create_new_session_builder().build_legacy().await.unwrap();
     let ks = unique_keyspace_name();
 
     session
@@ -1624,7 +1624,7 @@ async fn test_udt_with_missing_field() {
     let table_name = "udt_tests";
     let type_name = "usertype1";
 
-    let session: LegacySession = create_new_session_builder().build().await.unwrap();
+    let session: LegacySession = create_new_session_builder().build_legacy().await.unwrap();
     let ks = unique_keyspace_name();
 
     session
