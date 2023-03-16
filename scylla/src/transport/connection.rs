@@ -2438,7 +2438,7 @@ mod tests {
             // Preparation phase
             let session = SessionBuilder::new()
                 .known_node_addr(addr)
-                .build()
+                .build_legacy()
                 .await
                 .unwrap();
             session.query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks.clone()), &[]).await.unwrap();
@@ -2529,7 +2529,7 @@ mod tests {
             // Preparation phase
             let session = SessionBuilder::new()
                 .known_node_addr(addr)
-                .build()
+                .build_legacy()
                 .await
                 .unwrap();
             session.query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks.clone()), &[]).await.unwrap();
