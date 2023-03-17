@@ -43,11 +43,12 @@ use super::connection::SslConfig;
 use super::errors::{NewSessionError, QueryError};
 use super::execution_profile::{ExecutionProfile, ExecutionProfileHandle, ExecutionProfileInner};
 use super::iterator::RawIterator;
-use super::legacy_query_result::MaybeFirstRowTypedError;
 #[cfg(feature = "cloud")]
 use super::node::CloudEndpoint;
 use super::node::KnownNode;
 use super::partitioner::PartitionerName;
+use super::query_result::MaybeFirstRowError;
+use super::query_result::RowsError;
 use super::topology::UntranslatedPeer;
 use super::{NodeRef, SelfIdentity};
 use crate::cql_to_rust::FromRow;
@@ -57,7 +58,7 @@ use crate::prepared_statement::PreparedStatement;
 use crate::query::Query;
 use crate::routing::{Shard, Token};
 use crate::statement::Consistency;
-use crate::tracing::{TracingEvent, TracingInfo};
+use crate::tracing::TracingInfo;
 use crate::transport::cluster::{Cluster, ClusterData, ClusterNeatDebug};
 use crate::transport::connection::{Connection, ConnectionConfig, VerifiedKeyspaceName};
 use crate::transport::connection_pool::PoolConfig;
@@ -1632,14 +1633,16 @@ where
 
         // Get tracing info
         let maybe_tracing_info: Option<TracingInfo> = traces_session_res
-            .into_legacy_result()?
-            .maybe_first_row_typed()
+            .maybe_first_row()
             .map_err(|err| match err {
-                MaybeFirstRowTypedError::RowsExpected(_) => QueryError::ProtocolError(
+                MaybeFirstRowError::NotRowsResponse => QueryError::ProtocolError(
                     "Response to system_traces.sessions query was not Rows",
                 ),
-                MaybeFirstRowTypedError::FromRowError(_) => QueryError::ProtocolError(
+                MaybeFirstRowError::TypeCheckFailed(_) => QueryError::ProtocolError(
                     "Columns from system_traces.session have an unexpected type",
+                ),
+                MaybeFirstRowError::DeserializationFailed(_) => QueryError::ProtocolError(
+                    "Failed to deserialize columns from system_traces.session",
                 ),
             })?;
 
@@ -1649,22 +1652,23 @@ where
         };
 
         // Get tracing events
-        let tracing_event_rows = traces_events_res
-            .into_legacy_result()?
-            .rows_typed()
-            .map_err(|_| {
+        let tracing_event_rows = traces_events_res.rows().map_err(|err| match err {
+            RowsError::NotRowsResponse => {
                 QueryError::ProtocolError("Response to system_traces.events query was not Rows")
-            })?;
+            }
+            RowsError::TypeCheckFailed(_) => QueryError::ProtocolError(
+                "Columns from system_traces.events have an unexpected type",
+            ),
+        })?;
 
-        for event in tracing_event_rows {
-            let tracing_event: TracingEvent = event.map_err(|_| {
-                QueryError::ProtocolError(
-                    "Columns from system_traces.events have an unexpected type",
-                )
-            })?;
-
-            tracing_info.events.push(tracing_event);
-        }
+        tracing_info.events =
+            tracing_event_rows
+                .collect::<Result<_, _>>()
+                .map_err(|_deser_err| {
+                    QueryError::ProtocolError(
+                        "Failed to deserialize columns from system_traces.events",
+                    )
+                })?;
 
         if tracing_info.events.is_empty() {
             return Ok(None);
