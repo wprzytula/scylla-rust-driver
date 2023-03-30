@@ -100,7 +100,7 @@ session
 
 // Read time from the table
 let result = session.query("SELECT a FROM keyspace.table", &[]).await?;
-let mut iter = result.rows_typed::<(Time,)>()?;
+let mut iter = result.rows::<(Time,)>()?;
 while let Some((time_value,)) = iter.next().transpose()? {
     println!("{:?}", time_value);
 }

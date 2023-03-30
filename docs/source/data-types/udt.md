@@ -50,10 +50,11 @@ Now it can be sent and received just like any other CQL value:
 # use std::error::Error;
 # async fn check_only_compiles(session: &Session) -> Result<(), Box<dyn Error>> {
 use scylla::IntoTypedRows;
-use scylla::macros::{FromUserType, SerializeValue};
+use scylla::macros::{SerializeValue, DeserializeValue};
 use scylla::cql_to_rust::FromCqlVal;
+use scylla::types::deserialize::value::DeserializeValue;
 
-#[derive(Debug, FromUserType, SerializeValue)]
+#[derive(Debug, DeserializeValue, SerializeValue)]
 struct MyType {
     int_val: i32,
     text_val: Option<String>,
@@ -71,7 +72,7 @@ session
 
 // Read MyType from the table
 let result = session.query("SELECT a FROM keyspace.table", &[]).await?;
-let mut iter = result.rows_typed::<(MyType,)>()?;
+let mut iter = result.rows::<(MyType,)>()?;
 while let Some((my_type_value,)) = iter.next().transpose()? {
     println!("{:?}", my_type_value);
 }
