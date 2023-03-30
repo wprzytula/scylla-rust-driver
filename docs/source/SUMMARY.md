@@ -9,6 +9,7 @@
 
 - [Migration guides](migration-guides/migration-guides.md)
     - [Adjusting code to changes in serialization API introduced in 0.11](migration-guides/0.11-serialization.md)
+    - [Adjusting deserialization code from 0.8 and older](migration-guides/post-0.8-deserialization.md)
 
 - [Connecting to the cluster](connecting/connecting.md)
     - [Compression](connecting/compression.md)
