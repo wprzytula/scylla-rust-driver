@@ -49,7 +49,7 @@ use futures::stream::StreamExt;
 let mut rows_stream = session
     .query_iter("SELECT a, b FROM ks.t", &[])
     .await?
-    .into_typed::<(i32, i32)>();
+    .rows_stream::<(i32, i32)>()?;
 
 while let Some(next_row_res) = rows_stream.next().await {
     let (a, b): (i32, i32) = next_row_res?;
@@ -76,7 +76,7 @@ let prepared: PreparedStatement = session
 let mut rows_stream = session
     .execute_iter(prepared, &[])
     .await?
-    .into_typed::<(i32, i32)>();
+    .rows_stream::<(i32, i32)>()?;
 
 while let Some(next_row_res) = rows_stream.next().await {
     let (a, b): (i32, i32) = next_row_res?;
@@ -194,10 +194,12 @@ loop {
         .execute_single_page(&paged_prepared, &[], paging_state)
         .await?;
 
+    let rows_res = res.into_rows_result()?.unwrap();
+
     println!(
         "Paging state response from the prepared statement execution: {:#?} ({} rows)",
         paging_state_response,
-        res.rows_num()?,
+        rows_res.rows_num(),
     );
 
     match paging_state_response.into_paging_control_flow() {
