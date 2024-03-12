@@ -47,7 +47,7 @@ use std::{
 };
 
 use super::errors::{ProtocolError, SchemaVersionFetchError, UseKeyspaceProtocolError};
-use super::iterator::{LegacyRowIterator, RawIterator};
+use super::iterator::RawIterator;
 use super::locator::tablets::{RawTablet, TabletParsingError};
 use super::query_result::QueryResult;
 use super::session::AddressTranslator;
@@ -1182,7 +1182,7 @@ impl Connection {
     pub(crate) async fn query_iter(
         self: Arc<Self>,
         query: Query,
-    ) -> Result<LegacyRowIterator, QueryError> {
+    ) -> Result<RawIterator, QueryError> {
         let consistency = query
             .config
             .determine_consistency(self.config.default_consistency);
@@ -1190,7 +1190,6 @@ impl Connection {
 
         RawIterator::new_for_connection_query_iter(query, self, consistency, serial_consistency)
             .await
-            .map(RawIterator::into_legacy)
     }
 
     /// Executes a prepared statements and fetches its results over multiple pages, using
@@ -1199,7 +1198,7 @@ impl Connection {
         self: Arc<Self>,
         prepared_statement: PreparedStatement,
         values: SerializedValues,
-    ) -> Result<LegacyRowIterator, QueryError> {
+    ) -> Result<RawIterator, QueryError> {
         let consistency = prepared_statement
             .config
             .determine_consistency(self.config.default_consistency);
@@ -1213,7 +1212,6 @@ impl Connection {
             serial_consistency,
         )
         .await
-        .map(RawIterator::into_legacy)
     }
 
     #[allow(dead_code)]
@@ -2377,6 +2375,7 @@ mod tests {
     use scylla_cql::frame::protocol_features::{
         LWT_OPTIMIZATION_META_BIT_MASK_KEY, SCYLLA_LWT_ADD_METADATA_MARK_EXTENSION,
     };
+    use scylla_cql::frame::response::result::Row;
     use scylla_cql::frame::types;
     use scylla_proxy::{
         Condition, Node, Proxy, Reaction, RequestFrame, RequestOpcode, RequestReaction,
@@ -2474,6 +2473,9 @@ mod tests {
             .query_iter(select_query.clone())
             .await
             .unwrap()
+            .into_typed::<Row>()
+            .unwrap()
+            .into_stream()
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
@@ -2499,6 +2501,8 @@ mod tests {
             .await
             .unwrap()
             .into_typed::<(i32,)>()
+            .unwrap()
+            .into_stream()
             .map(|ret| ret.unwrap().0)
             .collect::<Vec<_>>()
             .await;
@@ -2512,6 +2516,9 @@ mod tests {
             ))
             .await
             .unwrap()
+            .into_typed::<Row>()
+            .unwrap()
+            .into_stream()
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
