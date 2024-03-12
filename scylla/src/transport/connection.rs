@@ -2184,7 +2184,7 @@ mod tests {
             // Preparation phase
             let session = SessionBuilder::new()
                 .known_node_addr(addr)
-                .build_legacy()
+                .build()
                 .await
                 .unwrap();
             session.query(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks.clone()), &[]).await.unwrap();
@@ -2284,7 +2284,7 @@ mod tests {
             // Preparation phase
             let session = SessionBuilder::new()
                 .known_node_addr(addr)
-                .build_legacy()
+                .build()
                 .await
                 .unwrap();
             session.query(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks.clone()), &[]).await.unwrap();
@@ -2361,9 +2361,7 @@ mod tests {
                 .unwrap()
                 .into_query_result()
                 .unwrap()
-                .into_legacy_result()
-                .unwrap()
-                .rows_typed::<(i32, Vec<u8>)>()
+                .rows::<(i32, Vec<u8>)>()
                 .unwrap()
                 .collect::<Result<Vec<_>, _>>()
                 .unwrap();
