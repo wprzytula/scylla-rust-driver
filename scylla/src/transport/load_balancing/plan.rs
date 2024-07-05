@@ -115,34 +115,10 @@ impl<'a> Iterator for Plan<'a> {
                     self.state = PlanState::Picked(picked);
                     Some(Self::with_random_shard_if_unknown(picked))
                 } else {
-                    // `pick()` returned None, which semantically means that a first node cannot be computed _cheaply_.
-                    // This, however, does not imply that fallback would return an empty plan, too.
-                    // For instance, as a side effect of LWT optimisation in Default Policy, pick() may return None
-                    // when the primary replica is down. `fallback()` will nevertheless return the remaining replicas,
-                    // if there are such.
-                    let mut iter = self.policy.fallback(self.routing_info, self.cluster);
-                    let first_fallback_node = iter.next();
-                    if let Some(node) = first_fallback_node {
-                        self.state = PlanState::Fallback {
-                            iter,
-                            target_to_filter_out: node,
-                        };
-                        Some(Self::with_random_shard_if_unknown(node))
-                    } else {
-                        error!("Load balancing policy returned an empty plan! The query cannot be executed. Routing info: {:?}", self.routing_info);
-                        self.state = PlanState::PickedNone;
-                        None
-                    }
+                    None
                 }
             }
-            PlanState::Picked(node) => {
-                self.state = PlanState::Fallback {
-                    iter: self.policy.fallback(self.routing_info, self.cluster),
-                    target_to_filter_out: *node,
-                };
-
-                self.next()
-            }
+            PlanState::Picked(node) => None,
             PlanState::Fallback {
                 iter,
                 target_to_filter_out: node_to_filter_out,
