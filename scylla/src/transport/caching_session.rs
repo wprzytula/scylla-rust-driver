@@ -8,6 +8,7 @@ use crate::{QueryResult, Session};
 use bytes::Bytes;
 use dashmap::DashMap;
 use futures::future::try_join_all;
+use scylla_cql::frame::request::query::PagingContinuation;
 use scylla_cql::frame::response::result::{PreparedMetadata, ResultMetadata};
 use scylla_cql::types::serialize::batch::BatchValues;
 use scylla_cql::types::serialize::row::SerializeRow;
@@ -95,12 +96,12 @@ where
         &self,
         query: impl Into<Query>,
         values: impl SerializeRow,
-        paging_state: Option<Bytes>,
+        paging_continuation: Option<PagingContinuation>,
     ) -> Result<QueryResult, QueryError> {
         let query = query.into();
         let prepared = self.add_prepared_statement_owned(query).await?;
         self.session
-            .execute_paged(&prepared, values, paging_state.clone())
+            .execute_paged(&prepared, values, paging_continuation)
             .await
     }
 

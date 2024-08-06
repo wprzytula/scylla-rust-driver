@@ -8,8 +8,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use bytes::Bytes;
 use futures::Stream;
+use scylla_cql::frame::request::query::PagingContinuation;
 use scylla_cql::frame::response::NonErrorResponse;
 use scylla_cql::frame::types::SerialConsistency;
 use scylla_cql::types::serialize::row::SerializedValues;
@@ -159,20 +159,21 @@ impl RowIterator {
         let worker_task = async move {
             let query_ref = &query;
 
-            let page_query = |connection: Arc<Connection>,
-                              consistency: Consistency,
-                              paging_state: Option<Bytes>| {
-                async move {
-                    connection
-                        .query_with_consistency(
-                            query_ref,
-                            consistency,
-                            serial_consistency,
-                            paging_state,
-                        )
-                        .await
-                }
-            };
+            let page_query =
+                |connection: Arc<Connection>,
+                 consistency: Consistency,
+                 paging_continuation: Option<PagingContinuation>| {
+                    async move {
+                        connection
+                            .query_with_consistency(
+                                query_ref,
+                                consistency,
+                                serial_consistency,
+                                paging_continuation,
+                            )
+                            .await
+                    }
+                };
 
             let query_ref = &query;
 
@@ -191,7 +192,7 @@ impl RowIterator {
                 retry_session,
                 execution_profile,
                 metrics,
-                paging_state: None,
+                paging_continuation: None,
                 history_listener: query.config.history_listener.clone(),
                 current_query_id: None,
                 current_attempt_id: None,
@@ -256,19 +257,20 @@ impl RowIterator {
                 is_confirmed_lwt: config.prepared.is_confirmed_lwt(),
             };
 
-            let page_query = |connection: Arc<Connection>,
-                              consistency: Consistency,
-                              paging_state: Option<Bytes>| async move {
-                connection
-                    .execute_with_consistency(
-                        prepared_ref,
-                        values_ref,
-                        consistency,
-                        serial_consistency,
-                        paging_state,
-                    )
-                    .await
-            };
+            let page_query =
+                |connection: Arc<Connection>,
+                 consistency: Consistency,
+                 paging_continuation: Option<PagingContinuation>| async move {
+                    connection
+                        .execute_with_consistency(
+                            prepared_ref,
+                            values_ref,
+                            consistency,
+                            serial_consistency,
+                            paging_continuation,
+                        )
+                        .await
+                };
 
             let serialized_values_size = config.values.buffer_size();
 
@@ -308,7 +310,7 @@ impl RowIterator {
                 retry_session,
                 execution_profile: config.execution_profile,
                 metrics: config.metrics,
-                paging_state: None,
+                paging_continuation: None,
                 history_listener: config.prepared.config.history_listener.clone(),
                 current_query_id: None,
                 current_attempt_id: None,
@@ -425,6 +427,7 @@ impl RowIterator {
 // A separate module is used here so that the parent module cannot construct
 // SendAttemptedProof directly.
 mod checked_channel_sender {
+    use scylla_cql::frame::response::result::ResultMetadata;
     use scylla_cql::{errors::QueryError, frame::response::result::Rows};
     use std::marker::PhantomData;
     use tokio::sync::mpsc;
@@ -467,7 +470,7 @@ mod checked_channel_sender {
         ) {
             let empty_page = ReceivedPage {
                 rows: Rows {
-                    metadata: Default::default(),
+                    metadata: ResultMetadata::empty_mock(),
                     rows_count: 0,
                     rows: Vec::new(),
                     serialized_size: 0,
@@ -489,7 +492,7 @@ struct RowIteratorWorker<'a, QueryFunc, SpanCreatorFunc> {
     sender: ProvingSender<Result<ReceivedPage, QueryError>>,
 
     // Closure used to perform a single page query
-    // AsyncFn(Arc<Connection>, Option<Bytes>) -> Result<QueryResponse, QueryError>
+    // AsyncFn(Arc<Connection>, Option<Arc<[u8]>>) -> Result<QueryResponse, QueryError>
     page_query: QueryFunc,
 
     statement_info: RoutingInfo<'a>,
@@ -499,7 +502,7 @@ struct RowIteratorWorker<'a, QueryFunc, SpanCreatorFunc> {
     execution_profile: Arc<ExecutionProfileInner>,
     metrics: Arc<Metrics>,
 
-    paging_state: Option<Bytes>,
+    paging_continuation: Option<PagingContinuation>,
 
     history_listener: Option<Arc<dyn HistoryListener>>,
     current_query_id: Option<history::QueryId>,
@@ -511,7 +514,7 @@ struct RowIteratorWorker<'a, QueryFunc, SpanCreatorFunc> {
 
 impl<QueryFunc, QueryFut, SpanCreator> RowIteratorWorker<'_, QueryFunc, SpanCreator>
 where
-    QueryFunc: Fn(Arc<Connection>, Consistency, Option<Bytes>) -> QueryFut,
+    QueryFunc: Fn(Arc<Connection>, Consistency, Option<PagingContinuation>) -> QueryFut,
     QueryFut: Future<Output = Result<QueryResponse, QueryError>>,
     SpanCreator: Fn() -> RequestSpan,
 {
@@ -663,10 +666,13 @@ where
         );
         self.log_attempt_start(connection.get_connect_address());
 
-        let query_response =
-            (self.page_query)(connection.clone(), consistency, self.paging_state.clone())
-                .await
-                .and_then(QueryResponse::into_non_error_query_response);
+        let query_response = (self.page_query)(
+            connection.clone(),
+            consistency,
+            self.paging_continuation.clone(),
+        )
+        .await
+        .and_then(QueryResponse::into_non_error_query_response);
 
         let elapsed = query_start.elapsed();
 
@@ -674,7 +680,7 @@ where
 
         match query_response {
             Ok(NonErrorQueryResponse {
-                response: NonErrorResponse::Result(result::Result::Rows(mut rows)),
+                response: NonErrorResponse::Result(result::Result::Rows(rows)),
                 tracing_id,
                 ..
             }) => {
@@ -685,7 +691,11 @@ where
                     .load_balancing_policy
                     .on_query_success(&self.statement_info, elapsed, node);
 
-                self.paging_state = rows.metadata.paging_state.take();
+                self.paging_continuation = rows
+                    .metadata
+                    .paging_state
+                    .clone()
+                    .into_paging_continuation_opt();
 
                 request_span.record_rows_fields(&rows);
 
@@ -698,7 +708,7 @@ where
                     return Ok(ControlFlow::Break(proof));
                 }
 
-                if self.paging_state.is_none() {
+                if self.paging_continuation.is_none() {
                     // Reached the last query, shutdown
                     return Ok(ControlFlow::Break(proof));
                 }
@@ -830,7 +840,7 @@ struct SingleConnectionRowIteratorWorker<Fetcher> {
 
 impl<Fetcher, FetchFut> SingleConnectionRowIteratorWorker<Fetcher>
 where
-    Fetcher: Fn(Option<Bytes>) -> FetchFut + Send + Sync,
+    Fetcher: Fn(Option<PagingContinuation>) -> FetchFut + Send + Sync,
     FetchFut: Future<Output = Result<QueryResponse, QueryError>> + Send,
 {
     async fn work(mut self) -> PageSendAttemptedProof {
@@ -844,13 +854,17 @@ where
     }
 
     async fn do_work(&mut self) -> Result<PageSendAttemptedProof, QueryError> {
-        let mut paging_state = None;
+        let mut paging_continuation = None;
         loop {
-            let result = (self.fetcher)(paging_state).await?;
+            let result = (self.fetcher)(paging_continuation).await?;
             let response = result.into_non_error_query_response()?;
             match response.response {
-                NonErrorResponse::Result(result::Result::Rows(mut rows)) => {
-                    paging_state = rows.metadata.paging_state.take();
+                NonErrorResponse::Result(result::Result::Rows(rows)) => {
+                    paging_continuation = rows
+                        .metadata
+                        .paging_state
+                        .clone()
+                        .into_paging_continuation_opt();
                     let (proof, send_result) = self
                         .sender
                         .send(Ok(ReceivedPage {
@@ -858,7 +872,7 @@ where
                             tracing_id: response.tracing_id,
                         }))
                         .await;
-                    if paging_state.is_none() || send_result.is_err() {
+                    if paging_continuation.is_none() || send_result.is_err() {
                         return Ok(proof);
                     }
                 }

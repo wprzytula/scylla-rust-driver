@@ -2,6 +2,7 @@ use bytes::Bytes;
 use futures::{future::RemoteHandle, FutureExt};
 use scylla_cql::errors::TranslationError;
 use scylla_cql::frame::request::options::{self, Options};
+use scylla_cql::frame::request::query::{PagingContinuation, PagingState};
 use scylla_cql::frame::response::result::{ResultMetadata, TableSpec};
 use scylla_cql::frame::response::Error;
 use scylla_cql::frame::types::SerialConsistency;
@@ -265,7 +266,7 @@ impl NonErrorQueryResponse {
                 rs.metadata.col_specs,
                 rs.serialized_size,
             ),
-            NonErrorResponse::Result(_) => (None, None, vec![], 0),
+            NonErrorResponse::Result(_) => (None, PagingState::NoMorePages, vec![], 0),
             _ => {
                 return Err(QueryError::ProtocolError(
                     "Unexpected server response, expected Result or Error",
@@ -829,7 +830,7 @@ impl Connection {
     pub(crate) async fn query(
         &self,
         query: &Query,
-        paging_state: Option<Bytes>,
+        paging_continuation: Option<PagingContinuation>,
     ) -> Result<QueryResponse, QueryError> {
         // This method is used only for driver internal queries, so no need to consult execution profile here.
         self.query_with_consistency(
@@ -838,7 +839,7 @@ impl Connection {
                 .config
                 .determine_consistency(self.config.default_consistency),
             query.config.serial_consistency.flatten(),
-            paging_state,
+            paging_continuation,
         )
         .await
     }
@@ -848,7 +849,7 @@ impl Connection {
         query: &Query,
         consistency: Consistency,
         serial_consistency: Option<SerialConsistency>,
-        paging_state: Option<Bytes>,
+        paging_state: Option<PagingContinuation>,
     ) -> Result<QueryResponse, QueryError> {
         let query_frame = query::Query {
             contents: Cow::Borrowed(&query.contents),
@@ -872,7 +873,7 @@ impl Connection {
         &self,
         prepared: PreparedStatement,
         values: SerializedValues,
-        paging_state: Option<Bytes>,
+        paging_state: Option<PagingContinuation>,
     ) -> Result<QueryResponse, QueryError> {
         // This method is used only for driver internal queries, so no need to consult execution profile here.
         self.execute_with_consistency(
@@ -893,7 +894,7 @@ impl Connection {
         values: &SerializedValues,
         consistency: Consistency,
         serial_consistency: Option<SerialConsistency>,
-        paging_state: Option<Bytes>,
+        paging_state: Option<PagingContinuation>,
     ) -> Result<QueryResponse, QueryError> {
         let execute_frame = execute::Execute {
             id: prepared_statement.get_id().to_owned(),

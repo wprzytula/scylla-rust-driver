@@ -1,4 +1,5 @@
 use crate::cql_to_rust::{FromRow, FromRowError};
+use crate::frame::request::query::PagingState;
 use crate::frame::response::event::SchemaChangeEvent;
 use crate::frame::value::{
     Counter, CqlDate, CqlDecimal, CqlDuration, CqlTime, CqlTimestamp, CqlTimeuuid, CqlVarint,
@@ -422,11 +423,22 @@ pub struct ColumnSpec {
     pub typ: ColumnType,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ResultMetadata {
     col_count: usize,
-    pub paging_state: Option<Bytes>,
+    pub paging_state: PagingState,
     pub col_specs: Vec<ColumnSpec>,
+}
+
+impl ResultMetadata {
+    #[inline]
+    pub fn empty_mock() -> Self {
+        Self {
+            col_count: 0,
+            paging_state: PagingState::NoMorePages,
+            col_specs: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -583,11 +595,12 @@ fn deser_result_metadata(buf: &mut &[u8]) -> StdResult<ResultMetadata, ParseErro
 
     let col_count: usize = types::read_int(buf)?.try_into()?;
 
-    let paging_state = if has_more_pages {
-        Some(types::read_bytes(buf)?.to_owned().into())
+    let raw_paging_state = if has_more_pages {
+        Some(types::read_bytes(buf)?)
     } else {
         None
     };
+    let paging_state = PagingState::new_from_raw_bytes(raw_paging_state);
 
     if no_metadata {
         return Ok(ResultMetadata {

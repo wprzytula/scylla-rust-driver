@@ -10,11 +10,11 @@ use crate::history::HistoryListener;
 use crate::utils::pretty::{CommaSeparatedDisplayer, CqlValueDisplayer};
 use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
-use bytes::Bytes;
 use futures::future::join_all;
 use futures::future::try_join_all;
 use itertools::{Either, Itertools};
 pub use scylla_cql::errors::TranslationError;
+use scylla_cql::frame::request::query::PagingContinuation;
 use scylla_cql::frame::response::result::{deser_cql_value, ColumnSpec, Rows};
 use scylla_cql::frame::response::NonErrorResponse;
 use scylla_cql::types::serialize::batch::BatchValues;
@@ -642,7 +642,7 @@ impl Session {
         &self,
         query: impl Into<Query>,
         values: impl SerializeRow,
-        paging_state: Option<Bytes>,
+        paging_continuation: Option<PagingContinuation>,
     ) -> Result<QueryResult, QueryError> {
         let query: Query = query.into();
 
@@ -680,7 +680,7 @@ impl Session {
                     // Needed to avoid moving query and values into async move block
                     let query_ref = &query;
                     let values_ref = &values;
-                    let paging_state_ref = &paging_state;
+                    let paging_state_ref = &paging_continuation;
                     async move {
                         if values_ref.is_empty() {
                             span_ref.record_request_size(0);
@@ -990,11 +990,11 @@ impl Session {
         &self,
         prepared: &PreparedStatement,
         values: impl SerializeRow,
-        paging_state: Option<Bytes>,
+        paging_continuation: Option<PagingContinuation>,
     ) -> Result<QueryResult, QueryError> {
         let serialized_values = prepared.serialize_values(&values)?;
         let values_ref = &serialized_values;
-        let paging_state_ref = &paging_state;
+        let paging_state_ref = &paging_continuation;
 
         let (partition_key, token) = prepared
             .extract_partition_key_and_calculate_token(prepared.get_partitioner_name(), values_ref)?
@@ -1274,7 +1274,7 @@ impl Session {
             .await?;
 
         let result = match run_query_result {
-            RunQueryResult::IgnoredWriteError => QueryResult::default(),
+            RunQueryResult::IgnoredWriteError => QueryResult::mock_empty(),
             RunQueryResult::Completed(response) => response,
         };
         span.record_result_fields(&result);

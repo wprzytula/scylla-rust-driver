@@ -1,10 +1,14 @@
-use std::borrow::Cow;
+use std::{
+    borrow::Cow,
+    ops::{ControlFlow, Deref},
+    sync::Arc,
+};
 
 use crate::{
     frame::{frame_errors::ParseError, types::SerialConsistency},
     types::serialize::row::SerializedValues,
 };
-use bytes::{Buf, BufMut, Bytes};
+use bytes::{Buf, BufMut};
 
 use crate::{
     frame::request::{RequestOpcode, SerializableRequest},
@@ -62,7 +66,7 @@ pub struct QueryParameters<'a> {
     pub serial_consistency: Option<types::SerialConsistency>,
     pub timestamp: Option<i64>,
     pub page_size: Option<i32>,
-    pub paging_state: Option<Bytes>,
+    pub paging_state: Option<PagingContinuation>,
     pub skip_metadata: bool,
     pub values: Cow<'a, SerializedValues>,
 }
@@ -121,7 +125,7 @@ impl QueryParameters<'_> {
         }
 
         if let Some(paging_state) = &self.paging_state {
-            types::write_bytes(paging_state, buf)?;
+            types::write_bytes(paging_state.as_byte_slice(), buf)?;
         }
 
         if let Some(serial_consistency) = self.serial_consistency {
@@ -170,7 +174,9 @@ impl<'q> QueryParameters<'q> {
 
         let page_size = page_size_flag.then(|| types::read_int(buf)).transpose()?;
         let paging_state = if paging_state_flag {
-            Some(Bytes::copy_from_slice(types::read_bytes(buf)?))
+            Some(PagingContinuation::new_from_raw_bytes(types::read_bytes(
+                buf,
+            )?))
         } else {
             None
         };
@@ -202,5 +208,60 @@ impl<'q> QueryParameters<'q> {
             skip_metadata,
             values,
         })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum PagingState {
+    HasMorePages {
+        next_page_handle: PagingContinuation,
+    },
+    NoMorePages,
+}
+
+impl PagingState {
+    #[inline]
+    pub fn finished(&self) -> bool {
+        matches!(*self, Self::NoMorePages)
+    }
+
+    pub(crate) fn new_from_raw_bytes(raw_paging_state: Option<&[u8]>) -> Self {
+        match raw_paging_state {
+            Some(raw_bytes) => Self::HasMorePages {
+                next_page_handle: PagingContinuation::new_from_raw_bytes(raw_bytes),
+            },
+            None => Self::NoMorePages,
+        }
+    }
+
+    #[inline]
+    pub fn into_paging_continuation_opt(self) -> Option<PagingContinuation> {
+        match self {
+            Self::HasMorePages { next_page_handle } => Some(next_page_handle),
+            Self::NoMorePages => None,
+        }
+    }
+
+    #[inline]
+    pub fn into_paging_continuation(self) -> ControlFlow<(), PagingContinuation> {
+        match self {
+            Self::HasMorePages { next_page_handle } => ControlFlow::Continue(next_page_handle),
+            Self::NoMorePages => ControlFlow::Break(()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PagingContinuation(Arc<[u8]>);
+
+impl PagingContinuation {
+    #[inline]
+    pub(crate) fn new_from_raw_bytes(raw_bytes: &[u8]) -> Self {
+        Self(Arc::from(raw_bytes))
+    }
+
+    #[inline]
+    pub fn as_byte_slice(&self) -> &[u8] {
+        self.0.deref()
     }
 }
