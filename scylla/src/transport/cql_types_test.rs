@@ -23,7 +23,7 @@ async fn init_test(table_name: &str, type_name: &str) -> Session {
     let ks = unique_keyspace_name();
 
     session
-        .query(
+        .query_unpaged(
             format!(
                 "CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = \
             {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}",
@@ -36,12 +36,12 @@ async fn init_test(table_name: &str, type_name: &str) -> Session {
     session.use_keyspace(ks, false).await.unwrap();
 
     session
-        .query(format!("DROP TABLE IF EXISTS {}", table_name), &[])
+        .query_unpaged(format!("DROP TABLE IF EXISTS {}", table_name), &[])
         .await
         .unwrap();
 
     session
-        .query(
+        .query_unpaged(
             format!(
                 "CREATE TABLE IF NOT EXISTS {} (id int PRIMARY KEY, val {})",
                 table_name, type_name
@@ -73,20 +73,20 @@ where
         let insert_string_encoded_value =
             format!("INSERT INTO {} (id, val) VALUES (0, {})", type_name, test);
         session
-            .query(insert_string_encoded_value, &[])
+            .query_unpaged(insert_string_encoded_value, &[])
             .await
             .unwrap();
 
         let insert_bound_value = format!("INSERT INTO {} (id, val) VALUES (1, ?)", type_name);
         let value_to_bound = T::from_str(test).ok().unwrap();
         session
-            .query(insert_bound_value, (value_to_bound,))
+            .query_unpaged(insert_bound_value, (value_to_bound,))
             .await
             .unwrap();
 
         let select_values = format!("SELECT val from {}", type_name);
         let read_values: Vec<T> = session
-            .query(select_values, &[])
+            .query_unpaged(select_values, &[])
             .await
             .unwrap()
             .rows_typed::<(T,)>()
@@ -161,7 +161,7 @@ async fn test_cql_varint() {
     let ks = unique_keyspace_name();
 
     session
-        .query(
+        .query_unpaged(
             format!(
                 "CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = \
             {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}",
@@ -174,7 +174,7 @@ async fn test_cql_varint() {
     session.use_keyspace(ks, false).await.unwrap();
 
     session
-        .query(
+        .query_unpaged(
             format!(
                 "CREATE TABLE IF NOT EXISTS {} (id int PRIMARY KEY, val varint)",
                 table_name
@@ -199,12 +199,12 @@ async fn test_cql_varint() {
     for test in tests {
         let cql_varint = CqlVarint::from_signed_bytes_be_slice(&test);
         session
-            .execute(&prepared_insert, (&cql_varint,))
+            .execute_unpaged(&prepared_insert, (&cql_varint,))
             .await
             .unwrap();
 
         let read_values: Vec<CqlVarint> = session
-            .execute(&prepared_select, &[])
+            .execute_unpaged(&prepared_select, &[])
             .await
             .unwrap()
             .rows_typed::<(CqlVarint,)>()
@@ -273,13 +273,13 @@ async fn test_counter() {
         let update_bound_value = format!("UPDATE {} SET val = val + ? WHERE id = ?", type_name);
         let value_to_bound = Counter(i64::from_str(test).unwrap());
         session
-            .query(update_bound_value, (value_to_bound, i as i32))
+            .query_unpaged(update_bound_value, (value_to_bound, i as i32))
             .await
             .unwrap();
 
         let select_values = format!("SELECT val FROM {} WHERE id = ?", type_name);
         let read_values: Vec<Counter> = session
-            .query(select_values, (i as i32,))
+            .query_unpaged(select_values, (i as i32,))
             .await
             .unwrap()
             .rows_typed::<(Counter,)>()
@@ -344,7 +344,7 @@ async fn test_naive_date_04() {
 
     for (date_text, date) in tests.iter() {
         session
-            .query(
+            .query_unpaged(
                 format!(
                     "INSERT INTO chrono_naive_date_tests (id, val) VALUES (0, '{}')",
                     date_text
@@ -355,7 +355,7 @@ async fn test_naive_date_04() {
             .unwrap();
 
         let read_date: Option<NaiveDate> = session
-            .query("SELECT val from chrono_naive_date_tests", &[])
+            .query_unpaged("SELECT val from chrono_naive_date_tests", &[])
             .await
             .unwrap()
             .rows_typed::<(NaiveDate,)>()
@@ -370,7 +370,7 @@ async fn test_naive_date_04() {
         // If date is representable by NaiveDate try inserting it and reading again
         if let Some(naive_date) = date {
             session
-                .query(
+                .query_unpaged(
                     "INSERT INTO chrono_naive_date_tests (id, val) VALUES (0, ?)",
                     (naive_date,),
                 )
@@ -378,7 +378,7 @@ async fn test_naive_date_04() {
                 .unwrap();
 
             let (read_date,): (NaiveDate,) = session
-                .query("SELECT val from chrono_naive_date_tests", &[])
+                .query_unpaged("SELECT val from chrono_naive_date_tests", &[])
                 .await
                 .unwrap()
                 .single_row_typed::<(NaiveDate,)>()
@@ -406,7 +406,7 @@ async fn test_cql_date() {
 
     for (date_text, date) in &tests {
         session
-            .query(
+            .query_unpaged(
                 format!(
                     "INSERT INTO cql_date_tests (id, val) VALUES (0, '{}')",
                     date_text
@@ -417,7 +417,7 @@ async fn test_cql_date() {
             .unwrap();
 
         let read_date: CqlDate = session
-            .query("SELECT val from cql_date_tests", &[])
+            .query_unpaged("SELECT val from cql_date_tests", &[])
             .await
             .unwrap()
             .rows
@@ -432,7 +432,7 @@ async fn test_cql_date() {
 
     // 1 less/more than min/max values allowed by the database should cause error
     session
-        .query(
+        .query_unpaged(
             "INSERT INTO cql_date_tests (id, val) VALUES (0, '-5877641-06-22')",
             &[],
         )
@@ -440,7 +440,7 @@ async fn test_cql_date() {
         .unwrap_err();
 
     session
-        .query(
+        .query_unpaged(
             "INSERT INTO cql_date_tests (id, val) VALUES (0, '5881580-07-12')",
             &[],
         )
@@ -493,7 +493,7 @@ async fn test_date_03() {
 
     for (date_text, date) in tests.iter() {
         session
-            .query(
+            .query_unpaged(
                 format!(
                     "INSERT INTO time_date_tests (id, val) VALUES (0, '{}')",
                     date_text
@@ -504,7 +504,7 @@ async fn test_date_03() {
             .unwrap();
 
         let read_date = session
-            .query("SELECT val from time_date_tests", &[])
+            .query_unpaged("SELECT val from time_date_tests", &[])
             .await
             .unwrap()
             .first_row_typed::<(Date,)>()
@@ -516,7 +516,7 @@ async fn test_date_03() {
         // If date is representable by time::Date try inserting it and reading again
         if let Some(date) = date {
             session
-                .query(
+                .query_unpaged(
                     "INSERT INTO time_date_tests (id, val) VALUES (0, ?)",
                     (date,),
                 )
@@ -524,7 +524,7 @@ async fn test_date_03() {
                 .unwrap();
 
             let (read_date,) = session
-                .query("SELECT val from time_date_tests", &[])
+                .query_unpaged("SELECT val from time_date_tests", &[])
                 .await
                 .unwrap()
                 .first_row_typed::<(Date,)>()
@@ -556,7 +556,7 @@ async fn test_cql_time() {
     for (time_str, time_duration) in &tests {
         // Insert time as a string and verify that it matches
         session
-            .query(
+            .query_unpaged(
                 format!(
                     "INSERT INTO cql_time_tests (id, val) VALUES (0, '{}')",
                     time_str
@@ -567,7 +567,7 @@ async fn test_cql_time() {
             .unwrap();
 
         let (read_time,) = session
-            .query("SELECT val from cql_time_tests", &[])
+            .query_unpaged("SELECT val from cql_time_tests", &[])
             .await
             .unwrap()
             .single_row_typed::<(CqlTime,)>()
@@ -577,7 +577,7 @@ async fn test_cql_time() {
 
         // Insert time as a bound CqlTime value and verify that it matches
         session
-            .query(
+            .query_unpaged(
                 "INSERT INTO cql_time_tests (id, val) VALUES (0, ?)",
                 (*time_duration,),
             )
@@ -585,7 +585,7 @@ async fn test_cql_time() {
             .unwrap();
 
         let (read_time,) = session
-            .query("SELECT val from cql_time_tests", &[])
+            .query_unpaged("SELECT val from cql_time_tests", &[])
             .await
             .unwrap()
             .single_row_typed::<(CqlTime,)>()
@@ -608,7 +608,7 @@ async fn test_cql_time() {
 
     for time_str in &invalid_tests {
         session
-            .query(
+            .query_unpaged(
                 format!(
                     "INSERT INTO cql_time_tests (id, val) VALUES (0, '{}')",
                     time_str
@@ -652,7 +652,7 @@ async fn test_naive_time_04() {
     for (time_text, time) in tests.iter() {
         // Insert as string and read it again
         session
-            .query(
+            .query_unpaged(
                 format!(
                     "INSERT INTO chrono_time_tests (id, val) VALUES (0, '{}')",
                     time_text
@@ -663,7 +663,7 @@ async fn test_naive_time_04() {
             .unwrap();
 
         let (read_time,) = session
-            .query("SELECT val from chrono_time_tests", &[])
+            .query_unpaged("SELECT val from chrono_time_tests", &[])
             .await
             .unwrap()
             .first_row_typed::<(NaiveTime,)>()
@@ -673,7 +673,7 @@ async fn test_naive_time_04() {
 
         // Insert as type and read it again
         session
-            .query(
+            .query_unpaged(
                 "INSERT INTO chrono_time_tests (id, val) VALUES (0, ?)",
                 (time,),
             )
@@ -681,7 +681,7 @@ async fn test_naive_time_04() {
             .unwrap();
 
         let (read_time,) = session
-            .query("SELECT val from chrono_time_tests", &[])
+            .query_unpaged("SELECT val from chrono_time_tests", &[])
             .await
             .unwrap()
             .first_row_typed::<(NaiveTime,)>()
@@ -692,7 +692,7 @@ async fn test_naive_time_04() {
     // chrono can represent leap seconds, this should not panic
     let leap_second = NaiveTime::from_hms_nano_opt(23, 59, 59, 1_500_000_000);
     session
-        .query(
+        .query_unpaged(
             "INSERT INTO cql_time_tests (id, val) VALUES (0, ?)",
             (leap_second,),
         )
@@ -732,7 +732,7 @@ async fn test_time_03() {
     for (time_text, time) in tests.iter() {
         // Insert as string and read it again
         session
-            .query(
+            .query_unpaged(
                 format!(
                     "INSERT INTO time_time_tests (id, val) VALUES (0, '{}')",
                     time_text
@@ -743,7 +743,7 @@ async fn test_time_03() {
             .unwrap();
 
         let (read_time,) = session
-            .query("SELECT val from time_time_tests", &[])
+            .query_unpaged("SELECT val from time_time_tests", &[])
             .await
             .unwrap()
             .first_row_typed::<(Time,)>()
@@ -753,7 +753,7 @@ async fn test_time_03() {
 
         // Insert as type and read it again
         session
-            .query(
+            .query_unpaged(
                 "INSERT INTO time_time_tests (id, val) VALUES (0, ?)",
                 (time,),
             )
@@ -761,7 +761,7 @@ async fn test_time_03() {
             .unwrap();
 
         let (read_time,) = session
-            .query("SELECT val from time_time_tests", &[])
+            .query_unpaged("SELECT val from time_time_tests", &[])
             .await
             .unwrap()
             .first_row_typed::<(Time,)>()
@@ -803,7 +803,7 @@ async fn test_cql_timestamp() {
     for (timestamp_str, timestamp_duration) in &tests {
         // Insert timestamp as a string and verify that it matches
         session
-            .query(
+            .query_unpaged(
                 format!(
                     "INSERT INTO cql_timestamp_tests (id, val) VALUES (0, '{}')",
                     timestamp_str
@@ -814,7 +814,7 @@ async fn test_cql_timestamp() {
             .unwrap();
 
         let (read_timestamp,) = session
-            .query("SELECT val from cql_timestamp_tests", &[])
+            .query_unpaged("SELECT val from cql_timestamp_tests", &[])
             .await
             .unwrap()
             .single_row_typed::<(CqlTimestamp,)>()
@@ -824,7 +824,7 @@ async fn test_cql_timestamp() {
 
         // Insert timestamp as a bound CqlTimestamp value and verify that it matches
         session
-            .query(
+            .query_unpaged(
                 "INSERT INTO cql_timestamp_tests (id, val) VALUES (0, ?)",
                 (*timestamp_duration,),
             )
@@ -832,7 +832,7 @@ async fn test_cql_timestamp() {
             .unwrap();
 
         let (read_timestamp,) = session
-            .query("SELECT val from cql_timestamp_tests", &[])
+            .query_unpaged("SELECT val from cql_timestamp_tests", &[])
             .await
             .unwrap()
             .single_row_typed::<(CqlTimestamp,)>()
@@ -898,7 +898,7 @@ async fn test_date_time_04() {
     for (datetime_text, datetime) in tests.iter() {
         // Insert as string and read it again
         session
-            .query(
+            .query_unpaged(
                 format!(
                     "INSERT INTO chrono_datetime_tests (id, val) VALUES (0, '{}')",
                     datetime_text
@@ -909,7 +909,7 @@ async fn test_date_time_04() {
             .unwrap();
 
         let (read_datetime,) = session
-            .query("SELECT val from chrono_datetime_tests", &[])
+            .query_unpaged("SELECT val from chrono_datetime_tests", &[])
             .await
             .unwrap()
             .first_row_typed::<(DateTime<Utc>,)>()
@@ -919,7 +919,7 @@ async fn test_date_time_04() {
 
         // Insert as type and read it again
         session
-            .query(
+            .query_unpaged(
                 "INSERT INTO chrono_datetime_tests (id, val) VALUES (0, ?)",
                 (datetime,),
             )
@@ -927,7 +927,7 @@ async fn test_date_time_04() {
             .unwrap();
 
         let (read_datetime,) = session
-            .query("SELECT val from chrono_datetime_tests", &[])
+            .query_unpaged("SELECT val from chrono_datetime_tests", &[])
             .await
             .unwrap()
             .first_row_typed::<(DateTime<Utc>,)>()
@@ -947,7 +947,7 @@ async fn test_date_time_04() {
     )
     .and_utc();
     session
-        .query(
+        .query_unpaged(
             "INSERT INTO chrono_datetime_tests (id, val) VALUES (0, ?)",
             (nanosecond_precision_1st_half,),
         )
@@ -955,7 +955,7 @@ async fn test_date_time_04() {
         .unwrap();
 
     let (read_datetime,) = session
-        .query("SELECT val from chrono_datetime_tests", &[])
+        .query_unpaged("SELECT val from chrono_datetime_tests", &[])
         .await
         .unwrap()
         .first_row_typed::<(DateTime<Utc>,)>()
@@ -973,7 +973,7 @@ async fn test_date_time_04() {
     )
     .and_utc();
     session
-        .query(
+        .query_unpaged(
             "INSERT INTO chrono_datetime_tests (id, val) VALUES (0, ?)",
             (nanosecond_precision_2nd_half,),
         )
@@ -981,7 +981,7 @@ async fn test_date_time_04() {
         .unwrap();
 
     let (read_datetime,) = session
-        .query("SELECT val from chrono_datetime_tests", &[])
+        .query_unpaged("SELECT val from chrono_datetime_tests", &[])
         .await
         .unwrap()
         .first_row_typed::<(DateTime<Utc>,)>()
@@ -995,7 +995,7 @@ async fn test_date_time_04() {
     )
     .and_utc();
     session
-        .query(
+        .query_unpaged(
             "INSERT INTO cql_datetime_tests (id, val) VALUES (0, ?)",
             (leap_second,),
         )
@@ -1059,7 +1059,7 @@ async fn test_offset_date_time_03() {
     for (datetime_text, datetime) in tests.iter() {
         // Insert as string and read it again
         session
-            .query(
+            .query_unpaged(
                 format!(
                     "INSERT INTO time_datetime_tests (id, val) VALUES (0, '{}')",
                     datetime_text
@@ -1070,7 +1070,7 @@ async fn test_offset_date_time_03() {
             .unwrap();
 
         let (read_datetime,) = session
-            .query("SELECT val from time_datetime_tests", &[])
+            .query_unpaged("SELECT val from time_datetime_tests", &[])
             .await
             .unwrap()
             .first_row_typed::<(OffsetDateTime,)>()
@@ -1080,7 +1080,7 @@ async fn test_offset_date_time_03() {
 
         // Insert as type and read it again
         session
-            .query(
+            .query_unpaged(
                 "INSERT INTO time_datetime_tests (id, val) VALUES (0, ?)",
                 (datetime,),
             )
@@ -1088,7 +1088,7 @@ async fn test_offset_date_time_03() {
             .unwrap();
 
         let (read_datetime,) = session
-            .query("SELECT val from time_datetime_tests", &[])
+            .query_unpaged("SELECT val from time_datetime_tests", &[])
             .await
             .unwrap()
             .first_row_typed::<(OffsetDateTime,)>()
@@ -1108,7 +1108,7 @@ async fn test_offset_date_time_03() {
     )
     .assume_utc();
     session
-        .query(
+        .query_unpaged(
             "INSERT INTO time_datetime_tests (id, val) VALUES (0, ?)",
             (nanosecond_precision_1st_half,),
         )
@@ -1116,7 +1116,7 @@ async fn test_offset_date_time_03() {
         .unwrap();
 
     let (read_datetime,) = session
-        .query("SELECT val from time_datetime_tests", &[])
+        .query_unpaged("SELECT val from time_datetime_tests", &[])
         .await
         .unwrap()
         .first_row_typed::<(OffsetDateTime,)>()
@@ -1134,7 +1134,7 @@ async fn test_offset_date_time_03() {
     )
     .assume_utc();
     session
-        .query(
+        .query_unpaged(
             "INSERT INTO time_datetime_tests (id, val) VALUES (0, ?)",
             (nanosecond_precision_2nd_half,),
         )
@@ -1142,7 +1142,7 @@ async fn test_offset_date_time_03() {
         .unwrap();
 
     let (read_datetime,) = session
-        .query("SELECT val from time_datetime_tests", &[])
+        .query_unpaged("SELECT val from time_datetime_tests", &[])
         .await
         .unwrap()
         .first_row_typed::<(OffsetDateTime,)>()
@@ -1180,7 +1180,7 @@ async fn test_timeuuid() {
     for (timeuuid_str, timeuuid_bytes) in &tests {
         // Insert timeuuid as a string and verify that it matches
         session
-            .query(
+            .query_unpaged(
                 format!(
                     "INSERT INTO timeuuid_tests (id, val) VALUES (0, {})",
                     timeuuid_str
@@ -1191,7 +1191,7 @@ async fn test_timeuuid() {
             .unwrap();
 
         let (read_timeuuid,): (CqlTimeuuid,) = session
-            .query("SELECT val from timeuuid_tests", &[])
+            .query_unpaged("SELECT val from timeuuid_tests", &[])
             .await
             .unwrap()
             .single_row_typed::<(CqlTimeuuid,)>()
@@ -1202,7 +1202,7 @@ async fn test_timeuuid() {
         // Insert timeuuid as a bound value and verify that it matches
         let test_uuid: CqlTimeuuid = CqlTimeuuid::from_slice(timeuuid_bytes.as_ref()).unwrap();
         session
-            .query(
+            .query_unpaged(
                 "INSERT INTO timeuuid_tests (id, val) VALUES (0, ?)",
                 (test_uuid,),
             )
@@ -1210,7 +1210,7 @@ async fn test_timeuuid() {
             .unwrap();
 
         let (read_timeuuid,): (CqlTimeuuid,) = session
-            .query("SELECT val from timeuuid_tests", &[])
+            .query_unpaged("SELECT val from timeuuid_tests", &[])
             .await
             .unwrap()
             .single_row_typed::<(CqlTimeuuid,)>()
@@ -1227,7 +1227,7 @@ async fn test_timeuuid_ordering() {
     let ks = unique_keyspace_name();
 
     session
-        .query(
+        .query_unpaged(
             format!(
                 "CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = \
             {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}",
@@ -1240,7 +1240,7 @@ async fn test_timeuuid_ordering() {
     session.use_keyspace(ks, false).await.unwrap();
 
     session
-        .query(
+        .query_unpaged(
             "CREATE TABLE tab (p int, t timeuuid, PRIMARY KEY (p, t))",
             (),
         )
@@ -1272,11 +1272,14 @@ async fn test_timeuuid_ordering() {
         .await
         .unwrap();
     for timeuuid_val in &perms[0] {
-        session.execute(&prepared, (timeuuid_val,)).await.unwrap();
+        session
+            .execute_unpaged(&prepared, (timeuuid_val,))
+            .await
+            .unwrap();
     }
 
     let scylla_order_timeuuids: Vec<CqlTimeuuid> = session
-        .query("SELECT t FROM tab WHERE p = 0", ())
+        .query_unpaged("SELECT t FROM tab WHERE p = 0", ())
         .await
         .unwrap()
         .rows_typed::<(CqlTimeuuid,)>()
@@ -1344,7 +1347,7 @@ async fn test_inet() {
     for (inet_str, inet) in &tests {
         // Insert inet as a string and verify that it matches
         session
-            .query(
+            .query_unpaged(
                 format!(
                     "INSERT INTO inet_tests (id, val) VALUES (0, '{}')",
                     inet_str
@@ -1355,7 +1358,7 @@ async fn test_inet() {
             .unwrap();
 
         let (read_inet,): (IpAddr,) = session
-            .query("SELECT val from inet_tests WHERE id = 0", &[])
+            .query_unpaged("SELECT val from inet_tests WHERE id = 0", &[])
             .await
             .unwrap()
             .single_row_typed::<(IpAddr,)>()
@@ -1365,12 +1368,12 @@ async fn test_inet() {
 
         // Insert inet as a bound value and verify that it matches
         session
-            .query("INSERT INTO inet_tests (id, val) VALUES (0, ?)", (inet,))
+            .query_unpaged("INSERT INTO inet_tests (id, val) VALUES (0, ?)", (inet,))
             .await
             .unwrap();
 
         let (read_inet,): (IpAddr,) = session
-            .query("SELECT val from inet_tests WHERE id = 0", &[])
+            .query_unpaged("SELECT val from inet_tests WHERE id = 0", &[])
             .await
             .unwrap()
             .single_row_typed::<(IpAddr,)>()
@@ -1413,7 +1416,7 @@ async fn test_blob() {
     for (blob_str, blob) in &tests {
         // Insert blob as a string and verify that it matches
         session
-            .query(
+            .query_unpaged(
                 format!("INSERT INTO blob_tests (id, val) VALUES (0, {})", blob_str),
                 &[],
             )
@@ -1421,7 +1424,7 @@ async fn test_blob() {
             .unwrap();
 
         let (read_blob,): (Vec<u8>,) = session
-            .query("SELECT val from blob_tests WHERE id = 0", &[])
+            .query_unpaged("SELECT val from blob_tests WHERE id = 0", &[])
             .await
             .unwrap()
             .single_row_typed::<(Vec<u8>,)>()
@@ -1431,12 +1434,12 @@ async fn test_blob() {
 
         // Insert blob as a bound value and verify that it matches
         session
-            .query("INSERT INTO blob_tests (id, val) VALUES (0, ?)", (blob,))
+            .query_unpaged("INSERT INTO blob_tests (id, val) VALUES (0, ?)", (blob,))
             .await
             .unwrap();
 
         let (read_blob,): (Vec<u8>,) = session
-            .query("SELECT val from blob_tests WHERE id = 0", &[])
+            .query_unpaged("SELECT val from blob_tests WHERE id = 0", &[])
             .await
             .unwrap()
             .single_row_typed::<(Vec<u8>,)>()
@@ -1456,7 +1459,7 @@ async fn test_udt_after_schema_update() {
     let ks = unique_keyspace_name();
 
     session
-        .query(
+        .query_unpaged(
             format!(
                 "CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = \
             {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}",
@@ -1469,17 +1472,17 @@ async fn test_udt_after_schema_update() {
     session.use_keyspace(ks, false).await.unwrap();
 
     session
-        .query(format!("DROP TABLE IF EXISTS {}", table_name), &[])
+        .query_unpaged(format!("DROP TABLE IF EXISTS {}", table_name), &[])
         .await
         .unwrap();
 
     session
-        .query(format!("DROP TYPE IF EXISTS {}", type_name), &[])
+        .query_unpaged(format!("DROP TYPE IF EXISTS {}", type_name), &[])
         .await
         .unwrap();
 
     session
-        .query(
+        .query_unpaged(
             format!(
                 "CREATE TYPE IF NOT EXISTS {} (first int, second boolean)",
                 type_name
@@ -1490,7 +1493,7 @@ async fn test_udt_after_schema_update() {
         .unwrap();
 
     session
-        .query(
+        .query_unpaged(
             format!(
                 "CREATE TABLE IF NOT EXISTS {} (id int PRIMARY KEY, val {})",
                 table_name, type_name
@@ -1513,7 +1516,7 @@ async fn test_udt_after_schema_update() {
     };
 
     session
-        .query(
+        .query_unpaged(
             format!(
                 "INSERT INTO {}(id,val) VALUES (0, {})",
                 table_name, "{first: 123, second: true}"
@@ -1524,7 +1527,7 @@ async fn test_udt_after_schema_update() {
         .unwrap();
 
     let (read_udt,): (UdtV1,) = session
-        .query(format!("SELECT val from {} WHERE id = 0", table_name), &[])
+        .query_unpaged(format!("SELECT val from {} WHERE id = 0", table_name), &[])
         .await
         .unwrap()
         .single_row_typed::<(UdtV1,)>()
@@ -1533,7 +1536,7 @@ async fn test_udt_after_schema_update() {
     assert_eq!(read_udt, v1);
 
     session
-        .query(
+        .query_unpaged(
             format!("INSERT INTO {}(id,val) VALUES (0, ?)", table_name),
             &(&v1,),
         )
@@ -1541,7 +1544,7 @@ async fn test_udt_after_schema_update() {
         .unwrap();
 
     let (read_udt,): (UdtV1,) = session
-        .query(format!("SELECT val from {} WHERE id = 0", table_name), &[])
+        .query_unpaged(format!("SELECT val from {} WHERE id = 0", table_name), &[])
         .await
         .unwrap()
         .single_row_typed::<(UdtV1,)>()
@@ -1550,7 +1553,7 @@ async fn test_udt_after_schema_update() {
     assert_eq!(read_udt, v1);
 
     session
-        .query(format!("ALTER TYPE {} ADD third text;", type_name), &[])
+        .query_unpaged(format!("ALTER TYPE {} ADD third text;", type_name), &[])
         .await
         .unwrap();
 
@@ -1562,7 +1565,7 @@ async fn test_udt_after_schema_update() {
     }
 
     let (read_udt,): (UdtV2,) = session
-        .query(format!("SELECT val from {} WHERE id = 0", table_name), &[])
+        .query_unpaged(format!("SELECT val from {} WHERE id = 0", table_name), &[])
         .await
         .unwrap()
         .single_row_typed::<(UdtV2,)>()
@@ -1584,7 +1587,7 @@ async fn test_empty() {
     let session: Session = init_test("empty_tests", "int").await;
 
     session
-        .query(
+        .query_unpaged(
             "INSERT INTO empty_tests (id, val) VALUES (0, blobasint(0x))",
             (),
         )
@@ -1592,7 +1595,7 @@ async fn test_empty() {
         .unwrap();
 
     let (empty,) = session
-        .query("SELECT val FROM empty_tests WHERE id = 0", ())
+        .query_unpaged("SELECT val FROM empty_tests WHERE id = 0", ())
         .await
         .unwrap()
         .first_row_typed::<(CqlValue,)>()
@@ -1601,7 +1604,7 @@ async fn test_empty() {
     assert_eq!(empty, CqlValue::Empty);
 
     session
-        .query(
+        .query_unpaged(
             "INSERT INTO empty_tests (id, val) VALUES (1, ?)",
             (CqlValue::Empty,),
         )
@@ -1609,7 +1612,7 @@ async fn test_empty() {
         .unwrap();
 
     let (empty,) = session
-        .query("SELECT val FROM empty_tests WHERE id = 1", ())
+        .query_unpaged("SELECT val FROM empty_tests WHERE id = 1", ())
         .await
         .unwrap()
         .first_row_typed::<(CqlValue,)>()
@@ -1628,7 +1631,7 @@ async fn test_udt_with_missing_field() {
     let ks = unique_keyspace_name();
 
     session
-        .query(
+        .query_unpaged(
             format!(
                 "CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = \
             {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}",
@@ -1641,17 +1644,17 @@ async fn test_udt_with_missing_field() {
     session.use_keyspace(ks, false).await.unwrap();
 
     session
-        .query(format!("DROP TABLE IF EXISTS {}", table_name), &[])
+        .query_unpaged(format!("DROP TABLE IF EXISTS {}", table_name), &[])
         .await
         .unwrap();
 
     session
-        .query(format!("DROP TYPE IF EXISTS {}", type_name), &[])
+        .query_unpaged(format!("DROP TYPE IF EXISTS {}", type_name), &[])
         .await
         .unwrap();
 
     session
-        .query(
+        .query_unpaged(
             format!(
                 "CREATE TYPE IF NOT EXISTS {} (first int, second boolean, third float, fourth blob)",
                 type_name
@@ -1662,7 +1665,7 @@ async fn test_udt_with_missing_field() {
         .unwrap();
 
     session
-        .query(
+        .query_unpaged(
             format!(
                 "CREATE TABLE IF NOT EXISTS {} (id int PRIMARY KEY, val {})",
                 table_name, type_name
@@ -1685,14 +1688,14 @@ async fn test_udt_with_missing_field() {
         TR: FromCqlVal<CqlValue> + PartialEq + Debug,
     {
         session
-            .query(
+            .query_unpaged(
                 format!("INSERT INTO {}(id,val) VALUES (?,?)", table_name),
                 &(id, &element),
             )
             .await
             .unwrap();
         let result = session
-            .query(
+            .query_unpaged(
                 format!("SELECT val from {} WHERE id = ?", table_name),
                 &(id,),
             )

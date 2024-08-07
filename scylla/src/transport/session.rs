@@ -14,11 +14,11 @@ use futures::future::join_all;
 use futures::future::try_join_all;
 use itertools::{Either, Itertools};
 pub use scylla_cql::errors::TranslationError;
-use scylla_cql::frame::request::query::PagingContinuation;
+use scylla_cql::frame::request::query::{PagingContinuation, PagingState};
 use scylla_cql::frame::response::result::{deser_cql_value, ColumnSpec, Rows};
 use scylla_cql::frame::response::NonErrorResponse;
 use scylla_cql::types::serialize::batch::BatchValues;
-use scylla_cql::types::serialize::row::SerializeRow;
+use scylla_cql::types::serialize::row::{SerializeRow, SerializedValues};
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -31,7 +31,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
-use tracing::{debug, trace, trace_span, Instrument};
+use tracing::{debug, trace, trace_span, warn, Instrument};
 use uuid::Uuid;
 
 use super::connection::NonErrorQueryResponse;
@@ -619,12 +619,18 @@ impl Session {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn query(
+    pub async fn query_unpaged(
         &self,
         query: impl Into<Query>,
         values: impl SerializeRow,
     ) -> Result<QueryResult, QueryError> {
-        self.query_paged(query, values, None).await
+        let query = query.into();
+        let (result, paging_state) = self.query(&query, values, None, None).await?;
+        if !paging_state.finished() {
+            warn!("Unpaged query's response hints that there are more pages! Consider using Session API for paging queries,
+                   such as Session::query_iter or Session::query_single_page in a loop.");
+        }
+        Ok(result)
     }
 
     /// Queries the database with a custom paging state.
@@ -637,15 +643,41 @@ impl Session {
     ///
     /// * `query` - query to be performed
     /// * `values` - values bound to the query
-    /// * `paging_state` - previously received paging state or None
-    pub async fn query_paged(
+    /// * `paging_continuation` - // FIXME: previously received paging state or None
+    pub async fn query_single_page(
         &self,
         query: impl Into<Query>,
         values: impl SerializeRow,
         paging_continuation: Option<PagingContinuation>,
-    ) -> Result<QueryResult, QueryError> {
-        let query: Query = query.into();
+    ) -> Result<(QueryResult, PagingState), QueryError> {
+        let query = query.into();
+        self.query(
+            &query,
+            values,
+            Some(query.get_page_size()),
+            paging_continuation,
+        )
+        .await
+    }
 
+    /// Queries the database with a custom paging state.
+    ///
+    /// It is discouraged to use this method with non-empty values argument (`is_empty()` method from `SerializeRow`
+    /// trait returns false). In such case, query first needs to be prepared (on a single connection), so
+    /// driver will perform 2 round trips instead of 1. Please use [`Session::execute_paged()`] instead.
+    ///
+    /// # Arguments
+    ///
+    /// * `query` - query to be performed
+    /// * `values` - values bound to the query
+    /// * `paging_continuation` - // FIXME: previously received paging state or None
+    async fn query(
+        &self,
+        query: &Query,
+        values: impl SerializeRow,
+        page_size: Option<PageSize>,
+        paging_continuation: Option<PagingContinuation>,
+    ) -> Result<(QueryResult, PagingState), QueryError> {
         let execution_profile = query
             .get_execution_profile_handle()
             .unwrap_or_else(|| self.get_default_execution_profile_handle())
@@ -689,6 +721,7 @@ impl Session {
                                     query_ref,
                                     consistency,
                                     serial_consistency,
+                                    page_size,
                                     paging_state_ref.clone(),
                                 )
                                 .await
@@ -703,6 +736,7 @@ impl Session {
                                     &serialized,
                                     consistency,
                                     serial_consistency,
+                                    page_size,
                                     paging_state_ref.clone(),
                                 )
                                 .await
@@ -727,9 +761,9 @@ impl Session {
         self.handle_set_keyspace_response(&response).await?;
         self.handle_auto_await_schema_agreement(&response).await?;
 
-        let result = response.into_query_result()?;
+        let (result, paging_state) = response.into_query_result_and_paging_state()?;
         span.record_result_fields(&result);
-        Ok(result)
+        Ok((result, paging_state))
     }
 
     async fn handle_set_keyspace_response(
@@ -972,27 +1006,52 @@ impl Session {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn execute(
+    pub async fn execute_unpaged(
         &self,
         prepared: &PreparedStatement,
         values: impl SerializeRow,
     ) -> Result<QueryResult, QueryError> {
-        self.execute_paged(prepared, values, None).await
+        let serialized_values = prepared.serialize_values(&values)?;
+        let (result, paging_state) = self
+            .execute(prepared, &serialized_values, None, None)
+            .await?;
+        if !paging_state.finished() {
+            warn!("Unpaged query's response hints that there are more pages! Consider using Session API for paging queries,
+                   such as Session::execute_iter or Session::execute_single_page in a loop.");
+        }
+        Ok(result)
+    }
+
+    pub async fn execute_single_page(
+        &self,
+        prepared: &PreparedStatement,
+        values: impl SerializeRow,
+        paging_continuation: Option<PagingContinuation>,
+    ) -> Result<(QueryResult, PagingState), QueryError> {
+        let serialized_values = prepared.serialize_values(&values)?;
+        let page_size = prepared.get_page_size();
+        self.execute(
+            prepared,
+            &serialized_values,
+            Some(page_size),
+            paging_continuation,
+        )
+        .await
     }
 
     /// Executes a previously prepared statement with previously received paging state
     /// # Arguments
     ///
     /// * `prepared` - a statement prepared with [prepare](crate::transport::session::Session::prepare)
-    /// * `values` - values bound to the query
-    /// * `paging_state` - paging state from the previous query or None
-    pub async fn execute_paged(
+    /// * `values` - values bound to the statement
+    /// * `paging_continuation` - paging state from the previous execution or None
+    async fn execute(
         &self,
         prepared: &PreparedStatement,
-        values: impl SerializeRow,
+        serialized_values: &SerializedValues,
+        page_size: Option<PageSize>,
         paging_continuation: Option<PagingContinuation>,
-    ) -> Result<QueryResult, QueryError> {
-        let serialized_values = prepared.serialize_values(&values)?;
+    ) -> Result<(QueryResult, PagingState), QueryError> {
         let values_ref = &serialized_values;
         let paging_state_ref = &paging_continuation;
 
@@ -1056,6 +1115,7 @@ impl Session {
                                 values_ref,
                                 consistency,
                                 serial_consistency,
+                                page_size,
                                 paging_state_ref.clone(),
                             )
                             .await
@@ -1079,9 +1139,9 @@ impl Session {
         self.handle_set_keyspace_response(&response).await?;
         self.handle_auto_await_schema_agreement(&response).await?;
 
-        let result = response.into_query_result()?;
+        let (result, paging_state) = response.into_query_result_and_paging_state()?;
         span.record_result_fields(&result);
-        Ok(result)
+        Ok((result, paging_state))
     }
 
     /// Run a prepared query with paging\
@@ -1465,8 +1525,8 @@ impl Session {
         traces_events_query.set_page_size(TRACING_QUERY_PAGE_SIZE);
 
         let (traces_session_res, traces_events_res) = tokio::try_join!(
-            self.query(traces_session_query, (tracing_id,)),
-            self.query(traces_events_query, (tracing_id,))
+            self.query_unpaged(traces_session_query, (tracing_id,)),
+            self.query_unpaged(traces_events_query, (tracing_id,))
         )?;
 
         // Get tracing info

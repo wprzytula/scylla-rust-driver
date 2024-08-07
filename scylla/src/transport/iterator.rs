@@ -27,8 +27,8 @@ use crate::frame::response::{
     result::{ColumnSpec, Row, Rows},
 };
 use crate::history::{self, HistoryListener};
+use crate::statement::Consistency;
 use crate::statement::{prepared_statement::PreparedStatement, query::Query};
-use crate::statement::{Consistency, PageSize};
 use crate::transport::cluster::ClusterData;
 use crate::transport::connection::{Connection, NonErrorQueryResponse, QueryResponse};
 use crate::transport::load_balancing::{self, RoutingInfo};
@@ -37,22 +37,6 @@ use crate::transport::retry_policy::{QueryInfo, RetryDecision, RetrySession};
 use crate::transport::NodeRef;
 use tracing::{trace, trace_span, warn, Instrument};
 use uuid::Uuid;
-
-// #424
-//
-// Both `Query` and `PreparedStatement` have page size set to `None` as default,
-// which means unlimited page size. This is a problem for `query_iter`
-// and `execute_iter` because using them with such queries causes everything
-// to be fetched in one page, despite them being meant to fetch data
-// page-by-page.
-//
-// We can't really change the default page size for `Query`
-// and `PreparedStatement` because it also affects `Session::{query,execute}`
-// and this could break existing code.
-//
-// In order to work around the problem we just set the page size to a default
-// value at the beginning of `query_iter` and `execute_iter`.
-const DEFAULT_ITER_PAGE_SIZE: PageSize = PageSize::new_const(5000);
 
 /// Iterator over rows returned by paged queries\
 /// Allows to easily access rows without worrying about handling multiple pages
@@ -124,14 +108,11 @@ impl RowIterator {
     }
 
     pub(crate) async fn new_for_query(
-        mut query: Query,
+        query: Query,
         execution_profile: Arc<ExecutionProfileInner>,
         cluster_data: Arc<ClusterData>,
         metrics: Arc<Metrics>,
     ) -> Result<RowIterator, QueryError> {
-        if query.get_page_size().is_none() {
-            query.set_page_size(DEFAULT_ITER_PAGE_SIZE);
-        }
         let (sender, receiver) = mpsc::channel(1);
 
         let consistency = query
@@ -142,6 +123,8 @@ impl RowIterator {
             .config
             .serial_consistency
             .unwrap_or(execution_profile.serial_consistency);
+
+        let page_size = query.get_page_size();
 
         let routing_info = RoutingInfo {
             consistency,
@@ -169,6 +152,7 @@ impl RowIterator {
                                 query_ref,
                                 consistency,
                                 serial_consistency,
+                                Some(page_size),
                                 paging_continuation,
                             )
                             .await
@@ -207,11 +191,8 @@ impl RowIterator {
     }
 
     pub(crate) async fn new_for_prepared_statement(
-        mut config: PreparedIteratorConfig,
+        config: PreparedIteratorConfig,
     ) -> Result<RowIterator, QueryError> {
-        if config.prepared.get_page_size().is_none() {
-            config.prepared.set_page_size(DEFAULT_ITER_PAGE_SIZE);
-        }
         let (sender, receiver) = mpsc::channel(1);
 
         let consistency = config
@@ -224,6 +205,9 @@ impl RowIterator {
             .config
             .serial_consistency
             .unwrap_or(config.execution_profile.serial_consistency);
+
+        let page_size = config.prepared.get_page_size();
+
         let retry_session = config
             .prepared
             .get_retry_policy()
@@ -267,6 +251,7 @@ impl RowIterator {
                             values_ref,
                             consistency,
                             serial_consistency,
+                            Some(page_size),
                             paging_continuation,
                         )
                         .await
@@ -325,15 +310,14 @@ impl RowIterator {
     }
 
     pub(crate) async fn new_for_connection_query_iter(
-        mut query: Query,
+        query: Query,
         connection: Arc<Connection>,
         consistency: Consistency,
         serial_consistency: Option<SerialConsistency>,
     ) -> Result<RowIterator, QueryError> {
-        if query.get_page_size().is_none() {
-            query.set_page_size(DEFAULT_ITER_PAGE_SIZE);
-        }
         let (sender, receiver) = mpsc::channel::<Result<ReceivedPage, QueryError>>(1);
+
+        let page_size = query.get_page_size();
 
         let worker_task = async move {
             let worker = SingleConnectionRowIteratorWorker {
@@ -343,6 +327,7 @@ impl RowIterator {
                         &query,
                         consistency,
                         serial_consistency,
+                        Some(page_size),
                         paging_state,
                     )
                 },
@@ -354,16 +339,15 @@ impl RowIterator {
     }
 
     pub(crate) async fn new_for_connection_execute_iter(
-        mut prepared: PreparedStatement,
+        prepared: PreparedStatement,
         values: SerializedValues,
         connection: Arc<Connection>,
         consistency: Consistency,
         serial_consistency: Option<SerialConsistency>,
     ) -> Result<RowIterator, QueryError> {
-        if prepared.get_page_size().is_none() {
-            prepared.set_page_size(DEFAULT_ITER_PAGE_SIZE);
-        }
         let (sender, receiver) = mpsc::channel::<Result<ReceivedPage, QueryError>>(1);
+
+        let page_size = prepared.get_page_size();
 
         let worker_task = async move {
             let worker = SingleConnectionRowIteratorWorker {
@@ -374,6 +358,7 @@ impl RowIterator {
                         &values,
                         consistency,
                         serial_consistency,
+                        Some(page_size),
                         paging_state,
                     )
                 },

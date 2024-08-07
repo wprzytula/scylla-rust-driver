@@ -69,9 +69,9 @@ async fn test_unprepared_statement() {
     let session = create_new_session_builder().build().await.unwrap();
     let ks = unique_keyspace_name();
 
-    session.query(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
+    session.query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
     session
-        .query(
+        .query_unpaged(
             format!(
                 "CREATE TABLE IF NOT EXISTS {}.t (a int, b int, c text, primary key (a, b))",
                 ks
@@ -82,21 +82,21 @@ async fn test_unprepared_statement() {
         .unwrap();
 
     session
-        .query(
+        .query_unpaged(
             format!("INSERT INTO {}.t (a, b, c) VALUES (1, 2, 'abc')", ks),
             &[],
         )
         .await
         .unwrap();
     session
-        .query(
+        .query_unpaged(
             format!("INSERT INTO {}.t (a, b, c) VALUES (7, 11, '')", ks),
             &[],
         )
         .await
         .unwrap();
     session
-        .query(
+        .query_unpaged(
             format!("INSERT INTO {}.t (a, b, c) VALUES (1, 4, 'hello')", ks),
             &[],
         )
@@ -104,7 +104,7 @@ async fn test_unprepared_statement() {
         .unwrap();
 
     let query_result = session
-        .query(format!("SELECT a, b, c FROM {}.t", ks), &[])
+        .query_unpaged(format!("SELECT a, b, c FROM {}.t", ks), &[])
         .await
         .unwrap();
 
@@ -149,16 +149,16 @@ async fn test_unprepared_statement() {
     let mut paging_continuation: Option<PagingContinuation> = None;
     let mut watchdog = 0;
     loop {
-        let rs_manual = session
-            .query_paged(query.clone(), &[], paging_continuation)
+        let (rs_manual, paging_state) = session
+            .query_single_page(query.clone(), &[], paging_continuation)
             .await
             .unwrap();
         results_from_manual_paging.append(&mut rs_manual.rows.unwrap());
-        if watchdog > 30 || rs_manual.paging_state.finished() {
+        if watchdog > 30 || paging_state.finished() {
             break;
         }
         watchdog += 1;
-        paging_continuation = rs_manual.paging_state.into_paging_continuation_opt();
+        paging_continuation = paging_state.into_paging_continuation_opt();
     }
     assert_eq!(results_from_manual_paging, rs);
 }
@@ -169,9 +169,9 @@ async fn test_prepared_statement() {
     let session = create_new_session_builder().build().await.unwrap();
     let ks = unique_keyspace_name();
 
-    session.query(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
+    session.query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
     session
-        .query(
+        .query_unpaged(
             format!(
                 "CREATE TABLE IF NOT EXISTS {}.t2 (a int, b int, c text, primary key (a, b))",
                 ks
@@ -181,7 +181,7 @@ async fn test_prepared_statement() {
         .await
         .unwrap();
     session
-        .query(format!("CREATE TABLE IF NOT EXISTS {}.complex_pk (a int, b int, c text, d int, e int, primary key ((a,b,c),d))", ks), &[])
+        .query_unpaged(format!("CREATE TABLE IF NOT EXISTS {}.complex_pk (a int, b int, c text, d int, e int, primary key ((a,b,c),d))", ks), &[])
         .await
         .unwrap();
 
@@ -218,16 +218,19 @@ async fn test_prepared_statement() {
         .serialize_values(&values)
         .unwrap();
 
-    session.execute(&prepared_statement, &values).await.unwrap();
     session
-        .execute(&prepared_complex_pk_statement, &values)
+        .execute_unpaged(&prepared_statement, &values)
+        .await
+        .unwrap();
+    session
+        .execute_unpaged(&prepared_complex_pk_statement, &values)
         .await
         .unwrap();
 
     // Verify that token calculation is compatible with Scylla
     {
         let (value,): (i64,) = session
-            .query(format!("SELECT token(a) FROM {}.t2", ks), &[])
+            .query_unpaged(format!("SELECT token(a) FROM {}.t2", ks), &[])
             .await
             .unwrap()
             .single_row_typed()
@@ -246,7 +249,7 @@ async fn test_prepared_statement() {
     }
     {
         let (value,): (i64,) = session
-            .query(format!("SELECT token(a,b,c) FROM {}.complex_pk", ks), &[])
+            .query_unpaged(format!("SELECT token(a,b,c) FROM {}.complex_pk", ks), &[])
             .await
             .unwrap()
             .single_row_typed()
@@ -268,7 +271,7 @@ async fn test_prepared_statement() {
     // Verify that correct data was inserted
     {
         let rs = session
-            .query(format!("SELECT a,b,c FROM {}.t2", ks), &[])
+            .query_unpaged(format!("SELECT a,b,c FROM {}.t2", ks), &[])
             .await
             .unwrap()
             .rows
@@ -286,22 +289,22 @@ async fn test_prepared_statement() {
         let mut paging_continuation: Option<PagingContinuation> = None;
         let mut watchdog = 0;
         loop {
-            let rs_manual = session
-                .execute_paged(&prepared_paged, &[], paging_continuation)
+            let (rs_manual, paging_state) = session
+                .execute_single_page(&prepared_paged, &[], paging_continuation)
                 .await
                 .unwrap();
             results_from_manual_paging.append(&mut rs_manual.rows.unwrap());
-            if watchdog > 30 || rs_manual.paging_state.finished() {
+            if watchdog > 30 || paging_state.finished() {
                 break;
             }
             watchdog += 1;
-            paging_continuation = rs_manual.paging_state.into_paging_continuation_opt();
+            paging_continuation = paging_state.into_paging_continuation_opt();
         }
         assert_eq!(results_from_manual_paging, rs);
     }
     {
         let (a, b, c, d, e): (i32, i32, String, i32, Option<i32>) = session
-            .query(format!("SELECT a,b,c,d,e FROM {}.complex_pk", ks), &[])
+            .query_unpaged(format!("SELECT a,b,c,d,e FROM {}.complex_pk", ks), &[])
             .await
             .unwrap()
             .single_row_typed()
@@ -331,7 +334,7 @@ async fn test_prepared_statement() {
             e: 5,
         };
         session
-            .query(
+            .query_unpaged(
                 format!(
                     "INSERT INTO {}.complex_pk (a,b,c,d,e) VALUES (?,?,?,?,?)",
                     ks
@@ -341,7 +344,7 @@ async fn test_prepared_statement() {
             .await
             .unwrap();
         let output: ComplexPk = session
-            .query(
+            .query_unpaged(
                 format!(
                     "SELECT * FROM {}.complex_pk WHERE a = 9 and b = 8 and c = 'seven'",
                     ks
@@ -365,9 +368,9 @@ async fn test_counter_batch() {
     let session = Arc::new(create_new_session_builder().build().await.unwrap());
     let ks = unique_keyspace_name();
 
-    session.query(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
+    session.query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
     session
-        .query(
+        .query_unpaged(
             format!(
                 "CREATE TABLE IF NOT EXISTS {}.t_batch (key int PRIMARY KEY, value counter)",
                 ks
@@ -413,9 +416,9 @@ async fn test_batch() {
     let session = Arc::new(create_new_session_builder().build().await.unwrap());
     let ks = unique_keyspace_name();
 
-    session.query(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
+    session.query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
     session
-        .query(
+        .query_unpaged(
             format!(
                 "CREATE TABLE IF NOT EXISTS {}.t_batch (a int, b int, c text, primary key (a, b))",
                 ks
@@ -461,7 +464,7 @@ async fn test_batch() {
     .unwrap();
 
     let mut results: Vec<(i32, i32, String)> = session
-        .query(format!("SELECT a, b, c FROM {}.t_batch", ks), &[])
+        .query_unpaged(format!("SELECT a, b, c FROM {}.t_batch", ks), &[])
         .await
         .unwrap()
         .rows_typed()
@@ -486,7 +489,7 @@ async fn test_batch() {
 
     // This statement flushes the prepared statement cache
     session
-        .query(
+        .query_unpaged(
             format!("ALTER TABLE {}.t_batch WITH gc_grace_seconds = 42", ks),
             &[],
         )
@@ -495,7 +498,7 @@ async fn test_batch() {
     session.batch(&batch, values).await.unwrap();
 
     let results: Vec<(i32, i32, String)> = session
-        .query(
+        .query_unpaged(
             format!("SELECT a, b, c FROM {}.t_batch WHERE a = 4", ks),
             &[],
         )
@@ -515,9 +518,9 @@ async fn test_token_calculation() {
     let session = create_new_session_builder().build().await.unwrap();
     let ks = unique_keyspace_name();
 
-    session.query(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
+    session.query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
     session
-        .query(
+        .query_unpaged(
             format!("CREATE TABLE IF NOT EXISTS {}.t3 (a text primary key)", ks),
             &[],
         )
@@ -542,10 +545,13 @@ async fn test_token_calculation() {
         }
         let values = (&s,);
         let serialized_values = prepared_statement.serialize_values(&values).unwrap();
-        session.execute(&prepared_statement, &values).await.unwrap();
+        session
+            .execute_unpaged(&prepared_statement, &values)
+            .await
+            .unwrap();
 
         let (value,): (i64,) = session
-            .query(
+            .query_unpaged(
                 format!("SELECT token(a) FROM {}.t3 WHERE a = ?", ks),
                 &values,
             )
@@ -581,9 +587,9 @@ async fn test_token_awareness() {
         create_ks += " AND TABLETS = {'enabled': false}"
     }
 
-    session.query(create_ks, &[]).await.unwrap();
+    session.query_unpaged(create_ks, &[]).await.unwrap();
     session
-        .query(
+        .query_unpaged(
             format!("CREATE TABLE IF NOT EXISTS {}.t (a text primary key)", ks),
             &[],
         )
@@ -602,7 +608,10 @@ async fn test_token_awareness() {
         let values = (&key,);
 
         // Execute a query and observe tracing info
-        let res = session.execute(&prepared_statement, values).await.unwrap();
+        let res = session
+            .execute_unpaged(&prepared_statement, values)
+            .await
+            .unwrap();
         let tracing_info = session
             .get_tracing_info(res.tracing_id.as_ref().unwrap())
             .await
@@ -630,10 +639,10 @@ async fn test_use_keyspace() {
     let session = create_new_session_builder().build().await.unwrap();
     let ks = unique_keyspace_name();
 
-    session.query(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
+    session.query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
 
     session
-        .query(
+        .query_unpaged(
             format!("CREATE TABLE IF NOT EXISTS {}.tab (a text primary key)", ks),
             &[],
         )
@@ -641,19 +650,19 @@ async fn test_use_keyspace() {
         .unwrap();
 
     session
-        .query(format!("INSERT INTO {}.tab (a) VALUES ('test1')", ks), &[])
+        .query_unpaged(format!("INSERT INTO {}.tab (a) VALUES ('test1')", ks), &[])
         .await
         .unwrap();
 
     session.use_keyspace(ks.clone(), false).await.unwrap();
 
     session
-        .query("INSERT INTO tab (a) VALUES ('test2')", &[])
+        .query_unpaged("INSERT INTO tab (a) VALUES ('test2')", &[])
         .await
         .unwrap();
 
     let mut rows: Vec<String> = session
-        .query("SELECT * FROM tab", &[])
+        .query_unpaged("SELECT * FROM tab", &[])
         .await
         .unwrap()
         .rows_typed::<(String,)>()
@@ -702,7 +711,7 @@ async fn test_use_keyspace() {
         .unwrap();
 
     let mut rows2: Vec<String> = session2
-        .query("SELECT * FROM tab", &[])
+        .query_unpaged("SELECT * FROM tab", &[])
         .await
         .unwrap()
         .rows_typed::<(String,)>()
@@ -722,11 +731,11 @@ async fn test_use_keyspace_case_sensitivity() {
     let ks_lower = unique_keyspace_name().to_lowercase();
     let ks_upper = ks_lower.to_uppercase();
 
-    session.query(format!("CREATE KEYSPACE IF NOT EXISTS \"{}\" WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks_lower), &[]).await.unwrap();
-    session.query(format!("CREATE KEYSPACE IF NOT EXISTS \"{}\" WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks_upper), &[]).await.unwrap();
+    session.query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS \"{}\" WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks_lower), &[]).await.unwrap();
+    session.query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS \"{}\" WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks_upper), &[]).await.unwrap();
 
     session
-        .query(
+        .query_unpaged(
             format!("CREATE TABLE {}.tab (a text primary key)", ks_lower),
             &[],
         )
@@ -734,7 +743,7 @@ async fn test_use_keyspace_case_sensitivity() {
         .unwrap();
 
     session
-        .query(
+        .query_unpaged(
             format!("CREATE TABLE \"{}\".tab (a text primary key)", ks_upper),
             &[],
         )
@@ -742,7 +751,7 @@ async fn test_use_keyspace_case_sensitivity() {
         .unwrap();
 
     session
-        .query(
+        .query_unpaged(
             format!("INSERT INTO {}.tab (a) VALUES ('lowercase')", ks_lower),
             &[],
         )
@@ -750,7 +759,7 @@ async fn test_use_keyspace_case_sensitivity() {
         .unwrap();
 
     session
-        .query(
+        .query_unpaged(
             format!("INSERT INTO \"{}\".tab (a) VALUES ('uppercase')", ks_upper),
             &[],
         )
@@ -762,7 +771,7 @@ async fn test_use_keyspace_case_sensitivity() {
     session.use_keyspace(ks_upper.clone(), false).await.unwrap();
 
     let rows: Vec<String> = session
-        .query("SELECT * from tab", &[])
+        .query_unpaged("SELECT * from tab", &[])
         .await
         .unwrap()
         .rows_typed::<(String,)>()
@@ -777,7 +786,7 @@ async fn test_use_keyspace_case_sensitivity() {
     session.use_keyspace(ks_upper, true).await.unwrap();
 
     let rows: Vec<String> = session
-        .query("SELECT * from tab", &[])
+        .query_unpaged("SELECT * from tab", &[])
         .await
         .unwrap()
         .rows_typed::<(String,)>()
@@ -794,10 +803,10 @@ async fn test_raw_use_keyspace() {
     let session = create_new_session_builder().build().await.unwrap();
     let ks = unique_keyspace_name();
 
-    session.query(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
+    session.query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
 
     session
-        .query(
+        .query_unpaged(
             format!("CREATE TABLE IF NOT EXISTS {}.tab (a text primary key)", ks),
             &[],
         )
@@ -805,7 +814,7 @@ async fn test_raw_use_keyspace() {
         .unwrap();
 
     session
-        .query(
+        .query_unpaged(
             format!("INSERT INTO {}.tab (a) VALUES ('raw_test')", ks),
             &[],
         )
@@ -813,12 +822,12 @@ async fn test_raw_use_keyspace() {
         .unwrap();
 
     session
-        .query(format!("use    \"{}\"    ;", ks), &[])
+        .query_unpaged(format!("use    \"{}\"    ;", ks), &[])
         .await
         .unwrap();
 
     let rows: Vec<String> = session
-        .query("SELECT * FROM tab", &[])
+        .query_unpaged("SELECT * FROM tab", &[])
         .await
         .unwrap()
         .rows_typed::<(String,)>()
@@ -830,12 +839,12 @@ async fn test_raw_use_keyspace() {
 
     // Check if case sensitivity is correctly detected
     assert!(session
-        .query(format!("use    \"{}\"    ;", ks.to_uppercase()), &[])
+        .query_unpaged(format!("use    \"{}\"    ;", ks.to_uppercase()), &[])
         .await
         .is_err());
 
     assert!(session
-        .query(format!("use    {}    ;", ks.to_uppercase()), &[])
+        .query_unpaged(format!("use    {}    ;", ks.to_uppercase()), &[])
         .await
         .is_ok());
 }
@@ -850,7 +859,10 @@ async fn test_fetch_system_keyspace() {
         .await
         .unwrap();
 
-    session.execute(&prepared_statement, &[]).await.unwrap();
+    session
+        .execute_unpaged(&prepared_statement, &[])
+        .await
+        .unwrap();
 }
 
 // Test that some Database Errors are parsed correctly
@@ -862,14 +874,14 @@ async fn test_db_errors() {
 
     // SyntaxError on bad query
     assert!(matches!(
-        session.query("gibberish", &[]).await,
+        session.query_unpaged("gibberish", &[]).await,
         Err(QueryError::DbError(DbError::SyntaxError, _))
     ));
 
     // AlreadyExists when creating a keyspace for the second time
-    session.query(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
+    session.query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
 
-    let create_keyspace_res = session.query(format!("CREATE KEYSPACE {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await;
+    let create_keyspace_res = session.query_unpaged(format!("CREATE KEYSPACE {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await;
     let keyspace_exists_error: DbError = match create_keyspace_res {
         Err(QueryError::DbError(e, _)) => e,
         _ => panic!("Second CREATE KEYSPACE didn't return an error!"),
@@ -885,7 +897,7 @@ async fn test_db_errors() {
 
     // AlreadyExists when creating a table for the second time
     session
-        .query(
+        .query_unpaged(
             format!("CREATE TABLE IF NOT EXISTS {}.tab (a text primary key)", ks),
             &[],
         )
@@ -893,7 +905,7 @@ async fn test_db_errors() {
         .unwrap();
 
     let create_table_res = session
-        .query(format!("CREATE TABLE {}.tab (a text primary key)", ks), &[])
+        .query_unpaged(format!("CREATE TABLE {}.tab (a text primary key)", ks), &[])
         .await;
     let create_tab_error: DbError = match create_table_res {
         Err(QueryError::DbError(e, _)) => e,
@@ -915,10 +927,10 @@ async fn test_tracing() {
     let session = create_new_session_builder().build().await.unwrap();
     let ks = unique_keyspace_name();
 
-    session.query(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
+    session.query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
 
     session
-        .query(
+        .query_unpaged(
             format!("CREATE TABLE IF NOT EXISTS {}.tab (a text primary key)", ks),
             &[],
         )
@@ -937,7 +949,8 @@ async fn test_tracing() {
 async fn test_tracing_query(session: &Session, ks: String) {
     // A query without tracing enabled has no tracing uuid in result
     let untraced_query: Query = Query::new(format!("SELECT * FROM {}.tab", ks));
-    let untraced_query_result: QueryResult = session.query(untraced_query, &[]).await.unwrap();
+    let untraced_query_result: QueryResult =
+        session.query_unpaged(untraced_query, &[]).await.unwrap();
 
     assert!(untraced_query_result.tracing_id.is_none());
 
@@ -945,7 +958,7 @@ async fn test_tracing_query(session: &Session, ks: String) {
     let mut traced_query: Query = Query::new(format!("SELECT * FROM {}.tab", ks));
     traced_query.config.tracing = true;
 
-    let traced_query_result: QueryResult = session.query(traced_query, &[]).await.unwrap();
+    let traced_query_result: QueryResult = session.query_unpaged(traced_query, &[]).await.unwrap();
     assert!(traced_query_result.tracing_id.is_some());
 
     // Querying this uuid from tracing table gives some results
@@ -959,8 +972,10 @@ async fn test_tracing_execute(session: &Session, ks: String) {
         .await
         .unwrap();
 
-    let untraced_prepared_result: QueryResult =
-        session.execute(&untraced_prepared, &[]).await.unwrap();
+    let untraced_prepared_result: QueryResult = session
+        .execute_unpaged(&untraced_prepared, &[])
+        .await
+        .unwrap();
 
     assert!(untraced_prepared_result.tracing_id.is_none());
 
@@ -972,7 +987,10 @@ async fn test_tracing_execute(session: &Session, ks: String) {
 
     traced_prepared.config.tracing = true;
 
-    let traced_prepared_result: QueryResult = session.execute(&traced_prepared, &[]).await.unwrap();
+    let traced_prepared_result: QueryResult = session
+        .execute_unpaged(&traced_prepared, &[])
+        .await
+        .unwrap();
     assert!(traced_prepared_result.tracing_id.is_some());
 
     // Querying this uuid from tracing table gives some results
@@ -1006,7 +1024,7 @@ async fn test_get_tracing_info(session: &Session, ks: String) {
     let mut traced_query: Query = Query::new(format!("SELECT * FROM {}.tab", ks));
     traced_query.config.tracing = true;
 
-    let traced_query_result: QueryResult = session.query(traced_query, &[]).await.unwrap();
+    let traced_query_result: QueryResult = session.query_unpaged(traced_query, &[]).await.unwrap();
     let tracing_id: Uuid = traced_query_result.tracing_id.unwrap();
 
     // Getting tracing info from session using this uuid works
@@ -1123,7 +1141,7 @@ async fn assert_in_tracing_table(session: &Session, tracing_uuid: Uuid) {
     // we stick to a not-so-much-terribly-long interval here.
     for _ in 0..200 {
         let rows_num = session
-            .query(traces_query.clone(), (tracing_uuid,))
+            .query_unpaged(traces_query.clone(), (tracing_uuid,))
             .await
             .unwrap()
             .rows_num()
@@ -1162,9 +1180,9 @@ async fn test_timestamp() {
     let session = create_new_session_builder().build().await.unwrap();
     let ks = unique_keyspace_name();
 
-    session.query(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
+    session.query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
     session
-        .query(
+        .query_unpaged(
             format!(
                 "CREATE TABLE IF NOT EXISTS {}.t_timestamp (a text, b text, primary key (a))",
                 ks
@@ -1184,13 +1202,13 @@ async fn test_timestamp() {
 
     regular_query.set_timestamp(Some(420));
     session
-        .query(regular_query.clone(), ("regular query", "higher timestamp"))
+        .query_unpaged(regular_query.clone(), ("regular query", "higher timestamp"))
         .await
         .unwrap();
 
     regular_query.set_timestamp(Some(42));
     session
-        .query(regular_query.clone(), ("regular query", "lower timestamp"))
+        .query_unpaged(regular_query.clone(), ("regular query", "lower timestamp"))
         .await
         .unwrap();
 
@@ -1200,13 +1218,13 @@ async fn test_timestamp() {
 
     prepared_statement.set_timestamp(Some(420));
     session
-        .execute(&prepared_statement, ("prepared query", "higher timestamp"))
+        .execute_unpaged(&prepared_statement, ("prepared query", "higher timestamp"))
         .await
         .unwrap();
 
     prepared_statement.set_timestamp(Some(42));
     session
-        .execute(&prepared_statement, ("prepared query", "lower timestamp"))
+        .execute_unpaged(&prepared_statement, ("prepared query", "lower timestamp"))
         .await
         .unwrap();
 
@@ -1241,7 +1259,7 @@ async fn test_timestamp() {
         .unwrap();
 
     let mut results = session
-        .query(
+        .query_unpaged(
             format!("SELECT a, b, WRITETIME(b) FROM {}.t_timestamp", ks),
             &[],
         )
@@ -1282,7 +1300,7 @@ async fn test_request_timeout() {
 
         let mut query: Query = Query::new("SELECT * FROM system_schema.tables");
         query.set_request_timeout(Some(Duration::from_millis(1)));
-        match session.query(query, &[]).await {
+        match session.query_unpaged(query, &[]).await {
             Ok(_) => panic!("the query should have failed due to a client-side timeout"),
             Err(e) => assert_matches!(e, QueryError::RequestTimeout(_)),
         }
@@ -1293,7 +1311,7 @@ async fn test_request_timeout() {
             .unwrap();
 
         prepared.set_request_timeout(Some(Duration::from_millis(1)));
-        match session.execute(&prepared, &[]).await {
+        match session.execute_unpaged(&prepared, &[]).await {
             Ok(_) => panic!("the prepared query should have failed due to a client-side timeout"),
             Err(e) => assert_matches!(e, QueryError::RequestTimeout(_)),
         };
@@ -1307,14 +1325,14 @@ async fn test_request_timeout() {
 
         let mut query = Query::new("SELECT * FROM system_schema.tables");
 
-        match timeouting_session.query(query.clone(), &[]).await {
+        match timeouting_session.query_unpaged(query.clone(), &[]).await {
             Ok(_) => panic!("the query should have failed due to a client-side timeout"),
             Err(e) => assert_matches!(e, QueryError::RequestTimeout(_)),
         };
 
         query.set_request_timeout(Some(Duration::from_secs(10000)));
 
-        timeouting_session.query(query, &[]).await.expect(
+        timeouting_session.query_unpaged(query, &[]).await.expect(
             "the query should have not failed, because no client-side timeout was specified",
         );
 
@@ -1323,14 +1341,14 @@ async fn test_request_timeout() {
             .await
             .unwrap();
 
-        match timeouting_session.execute(&prepared, &[]).await {
+        match timeouting_session.execute_unpaged(&prepared, &[]).await {
             Ok(_) => panic!("the prepared query should have failed due to a client-side timeout"),
             Err(e) => assert_matches!(e, QueryError::RequestTimeout(_)),
         };
 
         prepared.set_request_timeout(Some(Duration::from_secs(10000)));
 
-        timeouting_session.execute(&prepared, &[]).await.expect("the prepared query should have not failed, because no client-side timeout was specified");
+        timeouting_session.execute_unpaged(&prepared, &[]).await.expect("the prepared query should have not failed, because no client-side timeout was specified");
     }
 }
 
@@ -1348,7 +1366,7 @@ async fn test_prepared_config() {
     assert!(prepared_statement.get_is_idempotent());
     assert_eq!(
         prepared_statement.get_page_size(),
-        Some(PageSize::new(42).unwrap())
+        PageSize::new(42).unwrap()
     );
 }
 
@@ -1431,14 +1449,17 @@ async fn test_schema_types_in_metadata() {
     let ks = unique_keyspace_name();
 
     session
-        .query(format!("CREATE KEYSPACE {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[])
+        .query_unpaged(format!("CREATE KEYSPACE {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[])
         .await
         .unwrap();
 
-    session.query(format!("USE {}", ks), &[]).await.unwrap();
+    session
+        .query_unpaged(format!("USE {}", ks), &[])
+        .await
+        .unwrap();
 
     session
-        .query(
+        .query_unpaged(
             "CREATE TYPE IF NOT EXISTS type_a (
                     a map<frozen<list<int>>, text>,
                     b frozen<map<frozen<list<int>>, frozen<set<text>>>>
@@ -1449,12 +1470,12 @@ async fn test_schema_types_in_metadata() {
         .unwrap();
 
     session
-        .query("CREATE TYPE IF NOT EXISTS type_b (a int, b text)", &[])
+        .query_unpaged("CREATE TYPE IF NOT EXISTS type_b (a int, b text)", &[])
         .await
         .unwrap();
 
     session
-        .query(
+        .query_unpaged(
             "CREATE TYPE IF NOT EXISTS type_c (a map<frozen<set<text>>, frozen<type_b>>)",
             &[],
         )
@@ -1462,7 +1483,7 @@ async fn test_schema_types_in_metadata() {
         .unwrap();
 
     session
-        .query(
+        .query_unpaged(
             "CREATE TABLE IF NOT EXISTS table_a (
                     a frozen<type_a> PRIMARY KEY,
                     b type_b,
@@ -1476,7 +1497,7 @@ async fn test_schema_types_in_metadata() {
         .unwrap();
 
     session
-        .query(
+        .query_unpaged(
             "CREATE TABLE IF NOT EXISTS table_b (
                         a text PRIMARY KEY,
                         b frozen<map<int, int>>
@@ -1587,14 +1608,17 @@ async fn test_user_defined_types_in_metadata() {
     let ks = unique_keyspace_name();
 
     session
-        .query(format!("CREATE KEYSPACE {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[])
+        .query_unpaged(format!("CREATE KEYSPACE {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[])
         .await
         .unwrap();
 
-    session.query(format!("USE {}", ks), &[]).await.unwrap();
+    session
+        .query_unpaged(format!("USE {}", ks), &[])
+        .await
+        .unwrap();
 
     session
-        .query(
+        .query_unpaged(
             "CREATE TYPE IF NOT EXISTS type_a (
                     a map<frozen<list<int>>, text>,
                     b frozen<map<frozen<list<int>>, frozen<set<text>>>>
@@ -1605,12 +1629,12 @@ async fn test_user_defined_types_in_metadata() {
         .unwrap();
 
     session
-        .query("CREATE TYPE IF NOT EXISTS type_b (a int, b text)", &[])
+        .query_unpaged("CREATE TYPE IF NOT EXISTS type_b (a int, b text)", &[])
         .await
         .unwrap();
 
     session
-        .query(
+        .query_unpaged(
             "CREATE TYPE IF NOT EXISTS type_c (a map<frozen<set<text>>, frozen<type_b>>)",
             &[],
         )
@@ -1648,14 +1672,17 @@ async fn test_column_kinds_in_metadata() {
     let ks = unique_keyspace_name();
 
     session
-        .query(format!("CREATE KEYSPACE {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[])
+        .query_unpaged(format!("CREATE KEYSPACE {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[])
         .await
         .unwrap();
 
-    session.query(format!("USE {}", ks), &[]).await.unwrap();
+    session
+        .query_unpaged(format!("USE {}", ks), &[])
+        .await
+        .unwrap();
 
     session
-        .query(
+        .query_unpaged(
             "CREATE TABLE IF NOT EXISTS t (
                     a int,
                     b int,
@@ -1691,14 +1718,17 @@ async fn test_primary_key_ordering_in_metadata() {
     let ks = unique_keyspace_name();
 
     session
-        .query(format!("CREATE KEYSPACE {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[])
+        .query_unpaged(format!("CREATE KEYSPACE {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[])
         .await
         .unwrap();
 
-    session.query(format!("USE {}", ks), &[]).await.unwrap();
+    session
+        .query_unpaged(format!("USE {}", ks), &[])
+        .await
+        .unwrap();
 
     session
-        .query(
+        .query_unpaged(
             "CREATE TABLE IF NOT EXISTS t (
                     a int,
                     b int,
@@ -1744,12 +1774,15 @@ async fn test_table_partitioner_in_metadata() {
         create_ks += " AND TABLETS = {'enabled': false}";
     }
 
-    session.query(create_ks, &[]).await.unwrap();
-
-    session.query(format!("USE {}", ks), &[]).await.unwrap();
+    session.query_unpaged(create_ks, &[]).await.unwrap();
 
     session
-        .query(
+        .query_unpaged(format!("USE {}", ks), &[])
+        .await
+        .unwrap();
+
+    session
+        .query_unpaged(
             "CREATE TABLE t (pk int, ck int, v int, PRIMARY KEY (pk, ck, v))WITH cdc = {'enabled':true}",
             &[],
         )
@@ -1782,14 +1815,17 @@ async fn test_turning_off_schema_fetching() {
     let ks = unique_keyspace_name();
 
     session
-        .query(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[])
+        .query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[])
         .await
         .unwrap();
 
-    session.query(format!("USE {}", ks), &[]).await.unwrap();
+    session
+        .query_unpaged(format!("USE {}", ks), &[])
+        .await
+        .unwrap();
 
     session
-        .query(
+        .query_unpaged(
             "CREATE TYPE IF NOT EXISTS type_a (
                     a map<frozen<list<int>>, text>,
                     b frozen<map<frozen<list<int>>, frozen<set<text>>>>
@@ -1800,12 +1836,12 @@ async fn test_turning_off_schema_fetching() {
         .unwrap();
 
     session
-        .query("CREATE TYPE IF NOT EXISTS type_b (a int, b text)", &[])
+        .query_unpaged("CREATE TYPE IF NOT EXISTS type_b (a int, b text)", &[])
         .await
         .unwrap();
 
     session
-        .query(
+        .query_unpaged(
             "CREATE TYPE IF NOT EXISTS type_c (a map<frozen<set<text>>, frozen<type_b>>)",
             &[],
         )
@@ -1813,7 +1849,7 @@ async fn test_turning_off_schema_fetching() {
         .unwrap();
 
     session
-        .query(
+        .query_unpaged(
             "CREATE TABLE IF NOT EXISTS table_a (
                     a frozen<type_a> PRIMARY KEY,
                     b type_b,
@@ -1852,14 +1888,17 @@ async fn test_named_bind_markers() {
     let ks = unique_keyspace_name();
 
     session
-        .query(format!("CREATE KEYSPACE {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[])
+        .query_unpaged(format!("CREATE KEYSPACE {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[])
         .await
         .unwrap();
 
-    session.query(format!("USE {}", ks), &[]).await.unwrap();
+    session
+        .query_unpaged(format!("USE {}", ks), &[])
+        .await
+        .unwrap();
 
     session
-        .query(
+        .query_unpaged(
             "CREATE TABLE t (pk int, ck int, v int, PRIMARY KEY (pk, ck, v))",
             &[],
         )
@@ -1873,13 +1912,13 @@ async fn test_named_bind_markers() {
         .await
         .unwrap();
     let hashmap: HashMap<&str, i32> = HashMap::from([("pk", 7), ("v", 42), ("ck", 13)]);
-    session.execute(&prepared, &hashmap).await.unwrap();
+    session.execute_unpaged(&prepared, &hashmap).await.unwrap();
 
     let btreemap: BTreeMap<&str, i32> = BTreeMap::from([("ck", 113), ("v", 142), ("pk", 17)]);
-    session.execute(&prepared, &btreemap).await.unwrap();
+    session.execute_unpaged(&prepared, &btreemap).await.unwrap();
 
     let rows: Vec<(i32, i32, i32)> = session
-        .query("SELECT pk, ck, v FROM t", &[])
+        .query_unpaged("SELECT pk, ck, v FROM t", &[])
         .await
         .unwrap()
         .rows_typed::<(i32, i32, i32)>()
@@ -1896,7 +1935,7 @@ async fn test_named_bind_markers() {
         HashMap::from([("ck", 9)]),
     ];
     for wrongmap in wrongmaps {
-        assert!(session.execute(&prepared, &wrongmap).await.is_err());
+        assert!(session.execute_unpaged(&prepared, &wrongmap).await.is_err());
     }
 }
 
@@ -1912,11 +1951,11 @@ async fn test_prepared_partitioner() {
         create_ks += " AND TABLETS = {'enabled': false}"
     }
 
-    session.query(create_ks, &[]).await.unwrap();
+    session.query_unpaged(create_ks, &[]).await.unwrap();
     session.use_keyspace(ks, false).await.unwrap();
 
     session
-        .query("CREATE TABLE IF NOT EXISTS t1 (a int primary key)", &[])
+        .query_unpaged("CREATE TABLE IF NOT EXISTS t1 (a int primary key)", &[])
         .await
         .unwrap();
 
@@ -1938,7 +1977,7 @@ async fn test_prepared_partitioner() {
     }
 
     session
-        .query(
+        .query_unpaged(
             "CREATE TABLE IF NOT EXISTS t2 (a int primary key) WITH cdc = {'enabled':true}",
             &[],
         )
@@ -1961,14 +2000,14 @@ async fn test_prepared_partitioner() {
 
 async fn rename(session: &Session, rename_str: &str) {
     session
-        .query(format!("ALTER TABLE tab RENAME {}", rename_str), ())
+        .query_unpaged(format!("ALTER TABLE tab RENAME {}", rename_str), ())
         .await
         .unwrap();
 }
 
 async fn rename_caching(session: &CachingSession, rename_str: &str) {
     session
-        .execute(format!("ALTER TABLE tab RENAME {}", rename_str), &())
+        .execute_unpaged(format!("ALTER TABLE tab RENAME {}", rename_str), &())
         .await
         .unwrap();
 }
@@ -1987,11 +2026,11 @@ async fn test_unprepared_reprepare_in_execute() {
     let session = create_new_session_builder().build().await.unwrap();
     let ks = unique_keyspace_name();
 
-    session.query(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
+    session.query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
     session.use_keyspace(ks, false).await.unwrap();
 
     session
-        .query(
+        .query_unpaged(
             "CREATE TABLE IF NOT EXISTS tab (a int, b int, c int, primary key (a, b, c))",
             &[],
         )
@@ -2003,22 +2042,34 @@ async fn test_unprepared_reprepare_in_execute() {
         .await
         .unwrap();
 
-    session.execute(&insert_a_b_c, (1, 2, 3)).await.unwrap();
+    session
+        .execute_unpaged(&insert_a_b_c, (1, 2, 3))
+        .await
+        .unwrap();
 
     // Swap names of columns b and c
     rename(&session, "b TO tmp_name").await;
 
     // During rename the query should fail
-    assert!(session.execute(&insert_a_b_c, (1, 2, 3)).await.is_err());
+    assert!(session
+        .execute_unpaged(&insert_a_b_c, (1, 2, 3))
+        .await
+        .is_err());
     rename(&session, "c TO b").await;
-    assert!(session.execute(&insert_a_b_c, (1, 2, 3)).await.is_err());
+    assert!(session
+        .execute_unpaged(&insert_a_b_c, (1, 2, 3))
+        .await
+        .is_err());
     rename(&session, "tmp_name TO c").await;
 
     // Insert values again (b and c are swapped so those are different inserts)
-    session.execute(&insert_a_b_c, (1, 2, 3)).await.unwrap();
+    session
+        .execute_unpaged(&insert_a_b_c, (1, 2, 3))
+        .await
+        .unwrap();
 
     let mut all_rows: Vec<(i32, i32, i32)> = session
-        .query("SELECT a, b, c FROM tab", ())
+        .query_unpaged("SELECT a, b, c FROM tab", ())
         .await
         .unwrap()
         .rows_typed::<(i32, i32, i32)>()
@@ -2036,11 +2087,11 @@ async fn test_unusual_valuelists() {
     let session = create_new_session_builder().build().await.unwrap();
     let ks = unique_keyspace_name();
 
-    session.query(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
+    session.query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
     session.use_keyspace(ks, false).await.unwrap();
 
     session
-        .query(
+        .query_unpaged(
             "CREATE TABLE IF NOT EXISTS tab (a int, b int, c varchar, primary key (a, b, c))",
             &[],
         )
@@ -2057,7 +2108,10 @@ async fn test_unusual_valuelists() {
         &2 as &dyn SerializeValue,
         &"&dyn" as &dyn SerializeValue,
     ];
-    session.execute(&insert_a_b_c, values_dyn).await.unwrap();
+    session
+        .execute_unpaged(&insert_a_b_c, values_dyn)
+        .await
+        .unwrap();
 
     let values_box_dyn: Vec<Box<dyn SerializeValue>> = vec![
         Box::new(1) as Box<dyn SerializeValue>,
@@ -2065,12 +2119,12 @@ async fn test_unusual_valuelists() {
         Box::new("Box dyn") as Box<dyn SerializeValue>,
     ];
     session
-        .execute(&insert_a_b_c, values_box_dyn)
+        .execute_unpaged(&insert_a_b_c, values_box_dyn)
         .await
         .unwrap();
 
     let mut all_rows: Vec<(i32, i32, String)> = session
-        .query("SELECT a, b, c FROM tab", ())
+        .query_unpaged("SELECT a, b, c FROM tab", ())
         .await
         .unwrap()
         .rows_typed::<(i32, i32, String)>()
@@ -2101,11 +2155,11 @@ async fn test_unprepared_reprepare_in_batch() {
     let session = create_new_session_builder().build().await.unwrap();
     let ks = unique_keyspace_name();
 
-    session.query(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
+    session.query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
     session.use_keyspace(ks, false).await.unwrap();
 
     session
-        .query(
+        .query_unpaged(
             "CREATE TABLE IF NOT EXISTS tab (a int, b int, c int, primary key (a, b, c))",
             &[],
         )
@@ -2141,7 +2195,7 @@ async fn test_unprepared_reprepare_in_batch() {
     session.batch(&batch, ((1, 2, 3), (4, 5))).await.unwrap();
 
     let mut all_rows: Vec<(i32, i32, i32)> = session
-        .query("SELECT a, b, c FROM tab", ())
+        .query_unpaged("SELECT a, b, c FROM tab", ())
         .await
         .unwrap()
         .rows_typed::<(i32, i32, i32)>()
@@ -2166,13 +2220,13 @@ async fn test_unprepared_reprepare_in_caching_session_execute() {
     let session = create_new_session_builder().build().await.unwrap();
     let ks = unique_keyspace_name();
 
-    session.query(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
+    session.query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
     session.use_keyspace(ks, false).await.unwrap();
 
     let caching_session: CachingSession = CachingSession::from(session, 64);
 
     caching_session
-        .execute(
+        .execute_unpaged(
             "CREATE TABLE IF NOT EXISTS tab (a int, b int, c int, primary key (a, b, c))",
             &[],
         )
@@ -2182,7 +2236,7 @@ async fn test_unprepared_reprepare_in_caching_session_execute() {
     let insert_a_b_c = "INSERT INTO tab (a, b, c) VALUES (?, ?, ?)";
 
     caching_session
-        .execute(insert_a_b_c, &(1, 2, 3))
+        .execute_unpaged(insert_a_b_c, &(1, 2, 3))
         .await
         .unwrap();
 
@@ -2191,24 +2245,24 @@ async fn test_unprepared_reprepare_in_caching_session_execute() {
 
     // During rename the query should fail
     assert!(caching_session
-        .execute(insert_a_b_c, &(1, 2, 3))
+        .execute_unpaged(insert_a_b_c, &(1, 2, 3))
         .await
         .is_err());
     rename_caching(&caching_session, "c TO b").await;
     assert!(caching_session
-        .execute(insert_a_b_c, &(1, 2, 3))
+        .execute_unpaged(insert_a_b_c, &(1, 2, 3))
         .await
         .is_err());
     rename_caching(&caching_session, "tmp_name TO c").await;
 
     // Insert values again (b and c are swapped so those are different inserts)
     caching_session
-        .execute(insert_a_b_c, &(1, 2, 3))
+        .execute_unpaged(insert_a_b_c, &(1, 2, 3))
         .await
         .unwrap();
 
     let mut all_rows: Vec<(i32, i32, i32)> = caching_session
-        .execute("SELECT a, b, c FROM tab", &())
+        .execute_unpaged("SELECT a, b, c FROM tab", &())
         .await
         .unwrap()
         .rows_typed::<(i32, i32, i32)>()
@@ -2226,16 +2280,16 @@ async fn test_views_in_schema_info() {
     let session = create_new_session_builder().build().await.unwrap();
     let ks = unique_keyspace_name();
 
-    session.query(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
+    session.query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
     session.use_keyspace(ks.clone(), false).await.unwrap();
 
     session
-        .query("CREATE TABLE t(id int PRIMARY KEY, v int)", &[])
+        .query_unpaged("CREATE TABLE t(id int PRIMARY KEY, v int)", &[])
         .await
         .unwrap();
 
-    session.query("CREATE MATERIALIZED VIEW mv1 AS SELECT * FROM t WHERE v IS NOT NULL PRIMARY KEY (v, id)", &[]).await.unwrap();
-    session.query("CREATE MATERIALIZED VIEW mv2 AS SELECT id, v FROM t WHERE v IS NOT NULL PRIMARY KEY (v, id)", &[]).await.unwrap();
+    session.query_unpaged("CREATE MATERIALIZED VIEW mv1 AS SELECT * FROM t WHERE v IS NOT NULL PRIMARY KEY (v, id)", &[]).await.unwrap();
+    session.query_unpaged("CREATE MATERIALIZED VIEW mv2 AS SELECT id, v FROM t WHERE v IS NOT NULL PRIMARY KEY (v, id)", &[]).await.unwrap();
 
     session.await_schema_agreement().await.unwrap();
     session.refresh_metadata().await.unwrap();
@@ -2275,7 +2329,7 @@ async fn test_views_in_schema_info() {
 
 async fn assert_test_batch_table_rows_contain(sess: &Session, expected_rows: &[(i32, i32)]) {
     let selected_rows: BTreeSet<(i32, i32)> = sess
-        .query("SELECT a, b FROM test_batch_table", ())
+        .query_unpaged("SELECT a, b FROM test_batch_table", ())
         .await
         .unwrap()
         .rows_typed::<(i32, i32)>()
@@ -2297,11 +2351,11 @@ async fn test_prepare_batch() {
     let session = create_new_session_builder().build().await.unwrap();
 
     let ks = unique_keyspace_name();
-    session.query(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
+    session.query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
     session.use_keyspace(ks.clone(), false).await.unwrap();
 
     session
-        .query(
+        .query_unpaged(
             "CREATE TABLE test_batch_table (a int, b int, primary key (a, b))",
             (),
         )
@@ -2394,11 +2448,11 @@ async fn test_refresh_metadata_after_schema_agreement() {
     let session = create_new_session_builder().build().await.unwrap();
 
     let ks = unique_keyspace_name();
-    session.query(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
+    session.query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
     session.use_keyspace(ks.clone(), false).await.unwrap();
 
     session
-        .query(
+        .query_unpaged(
             "CREATE TYPE udt (field1 int, field2 uuid, field3 text)",
             &[],
         )
@@ -2440,9 +2494,9 @@ async fn test_rate_limit_exceeded_exception() {
     }
 
     let ks = unique_keyspace_name();
-    session.query(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
+    session.query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
     session.use_keyspace(ks.clone(), false).await.unwrap();
-    session.query("CREATE TABLE tbl (pk int PRIMARY KEY, v int) WITH per_partition_rate_limit = {'max_writes_per_second': 1}", ()).await.unwrap();
+    session.query_unpaged("CREATE TABLE tbl (pk int PRIMARY KEY, v int) WITH per_partition_rate_limit = {'max_writes_per_second': 1}", ()).await.unwrap();
 
     let stmt = session
         .prepare("INSERT INTO tbl (pk, v) VALUES (?, ?)")
@@ -2455,7 +2509,7 @@ async fn test_rate_limit_exceeded_exception() {
     let mut maybe_err = None;
 
     for _ in 0..1000 {
-        match session.execute(&stmt, (123, 456)).await {
+        match session.execute_unpaged(&stmt, (123, 456)).await {
             Ok(_) => {} // Try again
             Err(err) => {
                 maybe_err = Some(err);
@@ -2484,11 +2538,11 @@ async fn test_batch_lwts() {
     if scylla_supports_tablets(&session).await {
         create_ks += " and TABLETS = { 'enabled': false}";
     }
-    session.query(create_ks, &[]).await.unwrap();
+    session.query_unpaged(create_ks, &[]).await.unwrap();
     session.use_keyspace(ks.clone(), false).await.unwrap();
 
     session
-        .query(
+        .query_unpaged(
             "CREATE TABLE tab (p1 int, c1 int, r1 int, r2 int, primary key (p1, c1))",
             (),
         )
@@ -2496,7 +2550,7 @@ async fn test_batch_lwts() {
         .unwrap();
 
     session
-        .query("INSERT INTO tab (p1, c1, r1, r2) VALUES (0, 0, 0, 0)", ())
+        .query_unpaged("INSERT INTO tab (p1, c1, r1, r2) VALUES (0, 0, 0, 0)", ())
         .await
         .unwrap();
 
@@ -2599,7 +2653,7 @@ async fn test_keyspaces_to_fetch() {
     let session_default = create_new_session_builder().build().await.unwrap();
     for ks in [&ks1, &ks2] {
         session_default
-            .query(format!("CREATE KEYSPACE {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[])
+            .query_unpaged(format!("CREATE KEYSPACE {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[])
             .await
             .unwrap();
     }
@@ -2679,10 +2733,10 @@ async fn test_iter_works_when_retry_policy_returns_ignore_write_error() {
     if scylla_supports_tablets(&session).await {
         create_ks += " and TABLETS = { 'enabled': false}";
     }
-    session.query(create_ks, ()).await.unwrap();
+    session.query_unpaged(create_ks, ()).await.unwrap();
     session.use_keyspace(ks, true).await.unwrap();
     session
-        .query("CREATE TABLE t (pk int PRIMARY KEY, v int)", ())
+        .query_unpaged("CREATE TABLE t (pk int PRIMARY KEY, v int)", ())
         .await
         .unwrap();
 
@@ -2714,9 +2768,9 @@ async fn test_iter_methods_with_modification_statements() {
     let session = create_new_session_builder().build().await.unwrap();
     let ks = unique_keyspace_name();
 
-    session.query(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
+    session.query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
     session
-        .query(
+        .query_unpaged(
             format!(
                 "CREATE TABLE IF NOT EXISTS {}.t (a int, b int, c text, primary key (a, b))",
                 ks
@@ -2754,7 +2808,7 @@ async fn test_get_keyspace_name() {
     // No keyspace is set in config, so get_keyspace() should return None.
     let session = create_new_session_builder().build().await.unwrap();
     assert_eq!(session.get_keyspace(), None);
-    session.query(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
+    session.query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
     assert_eq!(session.get_keyspace(), None);
 
     // Call use_keyspace(), get_keyspace now should return the new keyspace name
@@ -2780,7 +2834,7 @@ async fn simple_strategy_test() {
     let session = create_new_session_builder().build().await.unwrap();
 
     session
-        .query(
+        .query_unpaged(
             format!(
                 "CREATE KEYSPACE {} WITH REPLICATION = \
                 {{'class': 'SimpleStrategy', 'replication_factor': 1}}",
@@ -2792,7 +2846,7 @@ async fn simple_strategy_test() {
         .unwrap();
 
     session
-        .query(
+        .query_unpaged(
             format!(
                 "CREATE TABLE {}.tab (p int, c int, r int, PRIMARY KEY (p, c, r))",
                 ks
@@ -2803,7 +2857,7 @@ async fn simple_strategy_test() {
         .unwrap();
 
     session
-        .query(
+        .query_unpaged(
             format!("INSERT INTO {}.tab (p, c, r) VALUES (1, 2, 3)", ks),
             (),
         )
@@ -2811,7 +2865,7 @@ async fn simple_strategy_test() {
         .unwrap();
 
     session
-        .query(
+        .query_unpaged(
             format!("INSERT INTO {}.tab (p, c, r) VALUES (?, ?, ?)", ks),
             (4, 5, 6),
         )
@@ -2823,10 +2877,10 @@ async fn simple_strategy_test() {
         .await
         .unwrap();
 
-    session.execute(&prepared, (7, 8, 9)).await.unwrap();
+    session.execute_unpaged(&prepared, (7, 8, 9)).await.unwrap();
 
     let mut rows: Vec<(i32, i32, i32)> = session
-        .query(format!("SELECT p, c, r FROM {}.tab", ks), ())
+        .query_unpaged(format!("SELECT p, c, r FROM {}.tab", ks), ())
         .await
         .unwrap()
         .rows_typed::<(i32, i32, i32)>()
@@ -2843,7 +2897,7 @@ async fn test_manual_primary_key_computation() {
     // Setup session
     let ks = unique_keyspace_name();
     let session = create_new_session_builder().build().await.unwrap();
-    session.query(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
+    session.query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks), &[]).await.unwrap();
     session.use_keyspace(&ks, true).await.unwrap();
 
     async fn assert_tokens_equal(
@@ -2858,7 +2912,7 @@ async fn test_manual_primary_key_computation() {
             .unwrap();
 
         session
-            .execute(prepared, all_values_in_query_order)
+            .execute_unpaged(prepared, all_values_in_query_order)
             .await
             .unwrap();
 
@@ -2878,7 +2932,7 @@ async fn test_manual_primary_key_computation() {
     // Single-column partition key
     {
         session
-            .query(
+            .query_unpaged(
                 "CREATE TABLE IF NOT EXISTS t2 (a int, b int, c text, primary key (a, b))",
                 &[],
             )
@@ -2909,7 +2963,7 @@ async fn test_manual_primary_key_computation() {
     // Composite partition key
     {
         session
-            .query("CREATE TABLE IF NOT EXISTS complex_pk (a int, b int, c text, d int, e int, primary key ((a,b,c),d))", &[])
+            .query_unpaged("CREATE TABLE IF NOT EXISTS complex_pk (a int, b int, c text, d int, e int, primary key ((a,b,c),d))", &[])
             .await
             .unwrap();
 

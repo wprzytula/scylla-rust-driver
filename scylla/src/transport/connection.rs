@@ -63,7 +63,7 @@ use crate::frame::{
 use crate::query::Query;
 use crate::routing::ShardInfo;
 use crate::statement::prepared_statement::PreparedStatement;
-use crate::statement::Consistency;
+use crate::statement::{Consistency, PageSize};
 use crate::transport::Compression;
 use crate::QueryResult;
 
@@ -238,6 +238,13 @@ impl QueryResponse {
         })
     }
 
+    pub(crate) fn into_query_result_and_paging_state(
+        self,
+    ) -> Result<(QueryResult, PagingState), QueryError> {
+        self.into_non_error_query_response()?
+            .into_query_result_and_paging_state()
+    }
+
     pub(crate) fn into_query_result(self) -> Result<QueryResult, QueryError> {
         self.into_non_error_query_response()?.into_query_result()
     }
@@ -258,7 +265,9 @@ impl NonErrorQueryResponse {
         }
     }
 
-    pub(crate) fn into_query_result(self) -> Result<QueryResult, QueryError> {
+    pub(crate) fn into_query_result_and_paging_state(
+        self,
+    ) -> Result<(QueryResult, PagingState), QueryError> {
         let (rows, paging_state, col_specs, serialized_size) = match self.response {
             NonErrorResponse::Result(result::Result::Rows(rs)) => (
                 Some(rs.rows),
@@ -274,14 +283,26 @@ impl NonErrorQueryResponse {
             }
         };
 
-        Ok(QueryResult {
-            rows,
-            warnings: self.warnings,
-            tracing_id: self.tracing_id,
+        Ok((
+            QueryResult {
+                rows,
+                warnings: self.warnings,
+                tracing_id: self.tracing_id,
+                col_specs,
+                serialized_size,
+            },
             paging_state,
-            col_specs,
-            serialized_size,
-        })
+        ))
+    }
+
+    pub(crate) fn into_query_result(self) -> Result<QueryResult, QueryError> {
+        let (result, paging_state) = self.into_query_result_and_paging_state()?;
+
+        if !paging_state.finished() {
+            warn!("Internal driver API misuse: nonfinished paging state discarded by `NonErrorQueryResponse::into_query_result`");
+        }
+
+        Ok(result)
     }
 }
 #[cfg(feature = "ssl")]
@@ -802,7 +823,8 @@ impl Connection {
     pub(crate) async fn query_single_page(
         &self,
         query: impl Into<Query>,
-    ) -> Result<QueryResult, QueryError> {
+        page_size: PageSize,
+    ) -> Result<(QueryResult, PagingState), QueryError> {
         let query: Query = query.into();
 
         // This method is used only for driver internal queries, so no need to consult execution profile here.
@@ -811,8 +833,13 @@ impl Connection {
             .determine_consistency(self.config.default_consistency);
         let serial_consistency = query.config.serial_consistency;
 
-        self.query_single_page_with_consistency(query, consistency, serial_consistency.flatten())
-            .await
+        self.query_single_page_with_consistency(
+            query,
+            consistency,
+            serial_consistency.flatten(),
+            page_size,
+        )
+        .await
     }
 
     pub(crate) async fn query_single_page_with_consistency(
@@ -820,16 +847,24 @@ impl Connection {
         query: impl Into<Query>,
         consistency: Consistency,
         serial_consistency: Option<SerialConsistency>,
-    ) -> Result<QueryResult, QueryError> {
+        page_size: PageSize,
+    ) -> Result<(QueryResult, PagingState), QueryError> {
         let query: Query = query.into();
-        self.query_with_consistency(&query, consistency, serial_consistency, None)
-            .await?
-            .into_query_result()
+        self.query_with_consistency(
+            &query,
+            consistency,
+            serial_consistency,
+            Some(page_size),
+            None,
+        )
+        .await?
+        .into_query_result_and_paging_state()
     }
 
     pub(crate) async fn query(
         &self,
         query: &Query,
+        page_size: Option<PageSize>,
         paging_continuation: Option<PagingContinuation>,
     ) -> Result<QueryResponse, QueryError> {
         // This method is used only for driver internal queries, so no need to consult execution profile here.
@@ -839,6 +874,7 @@ impl Connection {
                 .config
                 .determine_consistency(self.config.default_consistency),
             query.config.serial_consistency.flatten(),
+            page_size,
             paging_continuation,
         )
         .await
@@ -849,7 +885,8 @@ impl Connection {
         query: &Query,
         consistency: Consistency,
         serial_consistency: Option<SerialConsistency>,
-        paging_state: Option<PagingContinuation>,
+        page_size: Option<PageSize>,
+        paging_continuation: Option<PagingContinuation>,
     ) -> Result<QueryResponse, QueryError> {
         let query_frame = query::Query {
             contents: Cow::Borrowed(&query.contents),
@@ -857,8 +894,8 @@ impl Connection {
                 consistency,
                 serial_consistency,
                 values: Cow::Borrowed(SerializedValues::EMPTY),
-                page_size: query.get_page_size().map(Into::into),
-                paging_state,
+                page_size: page_size.map(Into::into),
+                paging_state: paging_continuation,
                 skip_metadata: false,
                 timestamp: query.get_timestamp(),
             },
@@ -873,7 +910,8 @@ impl Connection {
         &self,
         prepared: PreparedStatement,
         values: SerializedValues,
-        paging_state: Option<PagingContinuation>,
+        page_size: Option<PageSize>,
+        paging_continuation: Option<PagingContinuation>,
     ) -> Result<QueryResponse, QueryError> {
         // This method is used only for driver internal queries, so no need to consult execution profile here.
         self.execute_with_consistency(
@@ -883,7 +921,8 @@ impl Connection {
                 .config
                 .determine_consistency(self.config.default_consistency),
             prepared.config.serial_consistency.flatten(),
-            paging_state,
+            page_size,
+            paging_continuation,
         )
         .await
     }
@@ -894,6 +933,7 @@ impl Connection {
         values: &SerializedValues,
         consistency: Consistency,
         serial_consistency: Option<SerialConsistency>,
+        page_size: Option<PageSize>,
         paging_state: Option<PagingContinuation>,
     ) -> Result<QueryResponse, QueryError> {
         let execute_frame = execute::Execute {
@@ -902,7 +942,7 @@ impl Connection {
                 consistency,
                 serial_consistency,
                 values: Cow::Borrowed(values),
-                page_size: prepared_statement.get_page_size().map(Into::into),
+                page_size: page_size.map(Into::into),
                 timestamp: prepared_statement.get_timestamp(),
                 skip_metadata: prepared_statement.get_use_cached_result_metadata(),
                 paging_state,
@@ -1138,7 +1178,7 @@ impl Connection {
             false => format!("USE {}", keyspace_name.as_str()).into(),
         };
 
-        let query_response = self.query(&query, None).await?;
+        let query_response = self.query(&query, None, None).await?;
 
         match query_response.response {
             Response::Result(result::Result::SetKeyspace(set_keyspace)) => {
@@ -1181,21 +1221,24 @@ impl Connection {
     }
 
     pub(crate) async fn fetch_schema_version(&self) -> Result<Uuid, QueryError> {
-        let (version_id,): (Uuid,) = self
-            .query_single_page(LOCAL_VERSION)
-            .await?
-            .single_row_typed()
-            .map_err(|err| match err {
-                SingleRowTypedError::RowsExpected(_) => {
-                    QueryError::ProtocolError("Version query returned not rows")
-                }
-                SingleRowTypedError::BadNumberOfRows(_) => {
-                    QueryError::ProtocolError("system.local query returned a wrong number of rows")
-                }
-                SingleRowTypedError::FromRowError(_) => {
-                    QueryError::ProtocolError("Row is not uuid type as it should be")
-                }
-            })?;
+        let (result, paging_state) = self
+            .query_single_page(LOCAL_VERSION, PageSize::default())
+            .await?;
+        if !paging_state.finished() {
+            warn!("Fetching local schema version returned nonfinished paging state");
+        }
+
+        let (version_id,): (Uuid,) = result.single_row_typed().map_err(|err| match err {
+            SingleRowTypedError::RowsExpected(_) => {
+                QueryError::ProtocolError("Version query returned not rows")
+            }
+            SingleRowTypedError::BadNumberOfRows(_) => {
+                QueryError::ProtocolError("system.local query returned a wrong number of rows")
+            }
+            SingleRowTypedError::FromRowError(_) => {
+                QueryError::ProtocolError("Row is not uuid type as it should be")
+            }
+        })?;
         Ok(version_id)
     }
 
@@ -2197,14 +2240,14 @@ mod tests {
                 .build()
                 .await
                 .unwrap();
-            session.query(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks.clone()), &[]).await.unwrap();
+            session.query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks.clone()), &[]).await.unwrap();
             session.use_keyspace(ks.clone(), false).await.unwrap();
             session
-                .query("DROP TABLE IF EXISTS connection_query_iter_tab", &[])
+                .query_unpaged("DROP TABLE IF EXISTS connection_query_iter_tab", &[])
                 .await
                 .unwrap();
             session
-                .query(
+                .query_unpaged(
                     "CREATE TABLE IF NOT EXISTS connection_query_iter_tab (p int primary key)",
                     &[],
                 )
@@ -2239,7 +2282,7 @@ mod tests {
         for v in &values {
             let prepared_clone = prepared.clone();
             let values = prepared_clone.serialize_values(&(*v,)).unwrap();
-            let fut = async { connection.execute(prepared_clone, values, None).await };
+            let fut = async { connection.execute(prepared_clone, values, None, None).await };
             insert_futures.push(fut);
         }
 
@@ -2290,10 +2333,10 @@ mod tests {
                 .build()
                 .await
                 .unwrap();
-            session.query(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks.clone()), &[]).await.unwrap();
+            session.query_unpaged(format!("CREATE KEYSPACE IF NOT EXISTS {} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}", ks.clone()), &[]).await.unwrap();
             session.use_keyspace(ks.clone(), false).await.unwrap();
             session
-                .query(
+                .query_unpaged(
                     "CREATE TABLE IF NOT EXISTS t (p int primary key, v blob)",
                     &[],
                 )
@@ -2322,7 +2365,10 @@ mod tests {
                 .await
                 .unwrap();
 
-            connection.query(&"TRUNCATE t".into(), None).await.unwrap();
+            connection
+                .query(&"TRUNCATE t".into(), None, None)
+                .await
+                .unwrap();
 
             let mut futs = Vec::new();
 
@@ -2341,8 +2387,10 @@ mod tests {
                             let values = prepared
                                 .serialize_values(&(j, vec![j as u8; j as usize]))
                                 .unwrap();
-                            let response =
-                                conn.execute(prepared.clone(), values, None).await.unwrap();
+                            let response = conn
+                                .execute(prepared.clone(), values, None, None)
+                                .await
+                                .unwrap();
                             // QueryResponse might contain an error - make sure that there were no errors
                             let _nonerror_response =
                                 response.into_non_error_query_response().unwrap();
@@ -2359,7 +2407,7 @@ mod tests {
             // Check that everything was written properly
             let range_end = arithmetic_sequence_sum(NUM_BATCHES);
             let mut results = connection
-                .query(&"SELECT p, v FROM t".into(), None)
+                .query(&"SELECT p, v FROM t".into(), None, None)
                 .await
                 .unwrap()
                 .into_query_result()
@@ -2470,6 +2518,8 @@ mod tests {
     #[ntest::timeout(20000)]
     #[cfg(not(scylla_cloud_tests))]
     async fn connection_is_closed_on_no_response_to_keepalives() {
+        use crate::statement::PageSize;
+
         setup_tracing();
         let proxy_addr = SocketAddr::new(scylla_proxy::get_exclusive_local_address(), 9042);
         let uri = std::env::var("SCYLLA_URI").unwrap_or_else(|_| "127.0.0.1:9042".to_string());
@@ -2514,7 +2564,7 @@ mod tests {
         // As everything is normal, these queries should succeed.
         for _ in 0..3 {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            conn.query_single_page("SELECT host_id FROM system.local")
+            conn.query_single_page("SELECT host_id FROM system.local", PageSize::default())
                 .await
                 .unwrap();
         }
@@ -2534,7 +2584,7 @@ mod tests {
 
         // As the router is invalidated, all further queries should immediately
         // return error.
-        conn.query_single_page("SELECT host_id FROM system.local")
+        conn.query_single_page("SELECT host_id FROM system.local", PageSize::default())
             .await
             .unwrap_err();
 

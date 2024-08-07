@@ -14,7 +14,7 @@ pub struct Query {
     pub(crate) config: StatementConfig,
 
     pub contents: String,
-    page_size: Option<PageSize>,
+    page_size: PageSize,
 }
 
 impl Query {
@@ -22,29 +22,24 @@ impl Query {
     pub fn new(query_text: impl Into<String>) -> Self {
         Self {
             contents: query_text.into(),
-            page_size: None,
+            page_size: PageSize::default(),
             config: Default::default(),
         }
     }
 
     /// Returns self with page size set to the given value
     pub fn with_page_size(mut self, page_size: PageSize) -> Self {
-        self.page_size = Some(page_size);
+        self.page_size = page_size;
         self
     }
 
     /// Sets the page size for this CQL query.
     pub fn set_page_size(&mut self, page_size: PageSize) {
-        self.page_size = Some(page_size);
-    }
-
-    /// Disables paging for this CQL query.
-    pub fn disable_paging(&mut self) {
-        self.page_size = None;
+        self.page_size = page_size;
     }
 
     /// Returns the page size for this CQL query.
-    pub fn get_page_size(&self) -> Option<PageSize> {
+    pub fn get_page_size(&self) -> PageSize {
         self.page_size
     }
 

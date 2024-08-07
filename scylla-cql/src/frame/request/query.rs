@@ -60,6 +60,7 @@ impl<'q> DeserializableRequest for Query<'q> {
         })
     }
 }
+
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub struct QueryParameters<'a> {
     pub consistency: types::Consistency,

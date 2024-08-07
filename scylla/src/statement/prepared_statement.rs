@@ -92,7 +92,7 @@ pub struct PreparedStatement {
 
     id: Bytes,
     shared: Arc<PreparedStatementSharedData>,
-    page_size: Option<PageSize>,
+    page_size: PageSize,
     partitioner_name: PartitionerName,
     is_confirmed_lwt: bool,
 }
@@ -125,7 +125,7 @@ impl PreparedStatement {
         metadata: PreparedMetadata,
         result_metadata: ResultMetadata,
         statement: String,
-        page_size: Option<PageSize>,
+        page_size: PageSize,
         config: StatementConfig,
     ) -> Self {
         Self {
@@ -153,16 +153,11 @@ impl PreparedStatement {
 
     /// Sets the page size for this CQL query.
     pub fn set_page_size(&mut self, page_size: PageSize) {
-        self.page_size = Some(page_size);
-    }
-
-    /// Disables paging for this CQL query.
-    pub fn disable_paging(&mut self) {
-        self.page_size = None;
+        self.page_size = page_size;
     }
 
     /// Returns the page size for this CQL query.
-    pub fn get_page_size(&self) -> Option<PageSize> {
+    pub fn get_page_size(&self) -> PageSize {
         self.page_size
     }
 

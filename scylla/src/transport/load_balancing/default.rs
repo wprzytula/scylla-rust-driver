@@ -3697,7 +3697,7 @@ mod latency_awareness {
                 .await
                 .unwrap();
 
-            session.query("whatever", ()).await.unwrap_err();
+            session.query_unpaged("whatever", ()).await.unwrap_err();
         }
 
         #[tokio::test(start_paused = true)]
