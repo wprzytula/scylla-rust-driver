@@ -2,6 +2,7 @@ use anyhow::Result;
 use futures::stream::StreamExt;
 use scylla::{query::Query, Session, SessionBuilder};
 use std::env;
+use std::ops::ControlFlow;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -42,41 +43,32 @@ async fn main() -> Result<()> {
 
     let paged_query = Query::new("SELECT a, b, c FROM examples_ks.select_paging")
         .with_page_size(6.try_into().unwrap());
-    let (res1, paging_state1) = session
-        .query_single_page(paged_query.clone(), &[], None)
-        .await?;
-    println!(
-        "Paging state: {:#?} ({} rows)",
-        paging_state1,
-        res1.rows_num()?,
-    );
-    assert!(!paging_state1.finished());
-    let (res2, paging_state2) = session
-        .query_single_page(
-            paged_query.clone(),
-            &[],
-            paging_state1.into_paging_continuation_opt(),
-        )
-        .await?;
-    println!(
-        "Paging state: {:#?} ({} rows)",
-        paging_state2,
-        res2.rows_num()?,
-    );
-    assert!(!paging_state2.finished());
-    let (res3, paging_state3) = session
-        .query_single_page(
-            paged_query.clone(),
-            &[],
-            paging_state2.into_paging_continuation_opt(),
-        )
-        .await?;
-    println!(
-        "Paging state: {:#?} ({} rows)",
-        paging_state3,
-        res3.rows_num()?,
-    );
-    assert!(paging_state3.finished());
+
+    // Manual paging in a loop, unprepared statement.
+    let mut paging_continuation = None;
+    loop {
+        let (res, paging_state) = session
+            .query_single_page(paged_query.clone(), &[], paging_continuation)
+            .await?;
+
+        println!(
+            "Paging state: {:#?} ({} rows)",
+            paging_state,
+            res.rows_num()?,
+        );
+
+        match paging_state.into_paging_continuation() {
+            ControlFlow::Break(()) => {
+                // No more pages to be fetched.
+                break;
+            }
+            ControlFlow::Continue(continuation) => {
+                // Update paging continuation from the paging state, so that query
+                // will be resumed from where it ended the last time.
+                paging_continuation = Some(continuation);
+            }
+        }
+    }
 
     let paged_prepared = session
         .prepare(
@@ -84,40 +76,33 @@ async fn main() -> Result<()> {
                 .with_page_size(7.try_into().unwrap()),
         )
         .await?;
-    let (res4, paging_state4) = session
-        .execute_single_page(&paged_prepared, &[], None)
-        .await?;
-    println!(
-        "Paging state from the prepared statement execution: {:#?} ({} rows)",
-        paging_state4,
-        res4.rows_num()?,
-    );
-    let (res5, paging_state5) = session
-        .execute_single_page(
-            &paged_prepared,
-            &[],
-            paging_state4.into_paging_continuation_opt(),
-        )
-        .await?;
-    println!(
-        "Paging state from the second prepared statement execution: {:#?} ({} rows)",
-        paging_state5,
-        res5.rows_num()?,
-    );
-    assert!(!paging_state5.finished());
-    let (res6, paging_state6) = session
-        .execute_single_page(
-            &paged_prepared,
-            &[],
-            paging_state5.into_paging_continuation_opt(),
-        )
-        .await?;
-    println!(
-        "Paging state from the third prepared statement execution: {:#?} ({} rows)",
-        paging_state6,
-        res6.rows_num()?,
-    );
-    assert!(paging_state6.finished());
+
+    // Manual paging in a loop, prepared statement.
+    let mut paging_continuation = None;
+    loop {
+        let (res, paging_state) = session
+            .execute_single_page(&paged_prepared, &[], paging_continuation)
+            .await?;
+
+        println!(
+            "Paging state from the prepared statement execution: {:#?} ({} rows)",
+            paging_state,
+            res.rows_num()?,
+        );
+
+        match paging_state.into_paging_continuation() {
+            ControlFlow::Break(()) => {
+                // No more pages to be fetched.
+                break;
+            }
+            ControlFlow::Continue(continuation) => {
+                // Update paging continuation from the paging state, so that query
+                // will be resumed from where it ended the last time.
+                paging_continuation = Some(continuation);
+            }
+        }
+    }
+
     println!("Ok.");
 
     Ok(())
