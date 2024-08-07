@@ -5,7 +5,7 @@ use crate::prepared_statement::PreparedStatement;
 use crate::query::Query;
 use crate::retry_policy::{QueryInfo, RetryDecision, RetryPolicy, RetrySession};
 use crate::routing::Token;
-use crate::statement::Consistency;
+use crate::statement::{Consistency, PageSize};
 use crate::test_utils::{scylla_supports_tablets, setup_tracing};
 use crate::tracing::TracingInfo;
 use crate::transport::cluster::Datacenter;
@@ -144,7 +144,8 @@ async fn test_unprepared_statement() {
         assert_eq!(spec.table_spec.ks_name(), ks);
     }
     let mut results_from_manual_paging: Vec<Row> = vec![];
-    let query = Query::new(format!("SELECT a, b, c FROM {}.t", ks)).with_page_size(1);
+    let query =
+        Query::new(format!("SELECT a, b, c FROM {}.t", ks)).with_page_size(1.try_into().unwrap());
     let mut paging_state: Option<Bytes> = None;
     let mut watchdog = 0;
     loop {
@@ -279,7 +280,8 @@ async fn test_prepared_statement() {
         assert_eq!((a, b, c), (17, 16, &String::from("I'm prepared!!!")));
 
         let mut results_from_manual_paging: Vec<Row> = vec![];
-        let query = Query::new(format!("SELECT a, b, c FROM {}.t2", ks)).with_page_size(1);
+        let query = Query::new(format!("SELECT a, b, c FROM {}.t2", ks))
+            .with_page_size(1.try_into().unwrap());
         let prepared_paged = session.prepare(query).await.unwrap();
         let mut paging_state: Option<Bytes> = None;
         let mut watchdog = 0;
@@ -1339,12 +1341,15 @@ async fn test_prepared_config() {
 
     let mut query = Query::new("SELECT * FROM system_schema.tables");
     query.set_is_idempotent(true);
-    query.set_page_size(42);
+    query.set_page_size(42.try_into().unwrap());
 
     let prepared_statement = session.prepare(query).await.unwrap();
 
     assert!(prepared_statement.get_is_idempotent());
-    assert_eq!(prepared_statement.get_page_size(), Some(42));
+    assert_eq!(
+        prepared_statement.get_page_size(),
+        Some(PageSize::new(42).unwrap())
+    );
 }
 
 fn udt_type_a_def(ks: &str) -> Arc<UserDefinedType> {

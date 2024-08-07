@@ -27,8 +27,8 @@ use crate::frame::response::{
     result::{ColumnSpec, Row, Rows},
 };
 use crate::history::{self, HistoryListener};
-use crate::statement::Consistency;
 use crate::statement::{prepared_statement::PreparedStatement, query::Query};
+use crate::statement::{Consistency, PageSize};
 use crate::transport::cluster::ClusterData;
 use crate::transport::connection::{Connection, NonErrorQueryResponse, QueryResponse};
 use crate::transport::load_balancing::{self, RoutingInfo};
@@ -52,7 +52,7 @@ use uuid::Uuid;
 //
 // In order to work around the problem we just set the page size to a default
 // value at the beginning of `query_iter` and `execute_iter`.
-const DEFAULT_ITER_PAGE_SIZE: i32 = 5000;
+const DEFAULT_ITER_PAGE_SIZE: PageSize = PageSize::new_const(5000);
 
 /// Iterator over rows returned by paged queries\
 /// Allows to easily access rows without worrying about handling multiple pages

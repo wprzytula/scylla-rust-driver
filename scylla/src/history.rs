@@ -1042,7 +1042,7 @@ mod tests {
         }
 
         let mut iter_query: Query = Query::new("SELECT * FROM t");
-        iter_query.set_page_size(8);
+        iter_query.set_page_size(8.try_into().unwrap());
         let history_collector = Arc::new(HistoryCollector::new());
         iter_query.set_history_listener(history_collector.clone());
 

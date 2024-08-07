@@ -55,7 +55,7 @@ async fn main() -> Result<()> {
     }
 
     let mut iter_query: Query = Query::new("SELECT * FROM examples_ks.query_history");
-    iter_query.set_page_size(8);
+    iter_query.set_page_size(8.try_into().unwrap());
     let iter_history_listener = Arc::new(HistoryCollector::new());
     iter_query.set_history_listener(iter_history_listener.clone());
 

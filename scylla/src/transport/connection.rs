@@ -856,7 +856,7 @@ impl Connection {
                 consistency,
                 serial_consistency,
                 values: Cow::Borrowed(SerializedValues::EMPTY),
-                page_size: query.get_page_size(),
+                page_size: query.get_page_size().map(Into::into),
                 paging_state,
                 skip_metadata: false,
                 timestamp: query.get_timestamp(),
@@ -901,7 +901,7 @@ impl Connection {
                 consistency,
                 serial_consistency,
                 values: Cow::Borrowed(values),
-                page_size: prepared_statement.get_page_size(),
+                page_size: prepared_statement.get_page_size().map(Into::into),
                 timestamp: prepared_statement.get_timestamp(),
                 skip_metadata: prepared_statement.get_use_cached_result_metadata(),
                 paging_state,
@@ -2217,7 +2217,8 @@ mod tests {
             .unwrap();
 
         // 1. SELECT from an empty table returns query result where rows are Some(Vec::new())
-        let select_query = Query::new("SELECT p FROM connection_query_iter_tab").with_page_size(7);
+        let select_query = Query::new("SELECT p FROM connection_query_iter_tab")
+            .with_page_size(7.try_into().unwrap());
         let empty_res = connection
             .clone()
             .query_iter(select_query.clone())
@@ -2231,8 +2232,8 @@ mod tests {
         // 2. Insert 100 and select using query_iter with page_size 7
         let values: Vec<i32> = (0..100).collect();
         let mut insert_futures = Vec::new();
-        let insert_query =
-            Query::new("INSERT INTO connection_query_iter_tab (p) VALUES (?)").with_page_size(7);
+        let insert_query = Query::new("INSERT INTO connection_query_iter_tab (p) VALUES (?)")
+            .with_page_size(7.try_into().unwrap());
         let prepared = connection.prepare(&insert_query).await.unwrap();
         for v in &values {
             let prepared_clone = prepared.clone();

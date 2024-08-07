@@ -53,7 +53,7 @@ use crate::frame::response::result;
 use crate::prepared_statement::PreparedStatement;
 use crate::query::Query;
 use crate::routing::{Shard, Token};
-use crate::statement::Consistency;
+use crate::statement::{Consistency, PageSize};
 use crate::tracing::{TracingEvent, TracingInfo};
 use crate::transport::cluster::{Cluster, ClusterData, ClusterNeatDebug};
 use crate::transport::connection::{Connection, ConnectionConfig, VerifiedKeyspaceName};
@@ -80,6 +80,8 @@ use openssl::ssl::SslContext;
 use scylla_cql::errors::BadQuery;
 
 pub(crate) const TABLET_CHANNEL_SIZE: usize = 8192;
+
+const TRACING_QUERY_PAGE_SIZE: PageSize = PageSize::new_const(1024);
 
 /// Translates IP addresses received from ScyllaDB nodes into locally reachable addresses.
 ///
@@ -1455,12 +1457,12 @@ impl Session {
         // Query system_traces.sessions for TracingInfo
         let mut traces_session_query = Query::new(crate::tracing::TRACES_SESSION_QUERY_STR);
         traces_session_query.config.consistency = consistency;
-        traces_session_query.set_page_size(1024);
+        traces_session_query.set_page_size(TRACING_QUERY_PAGE_SIZE);
 
         // Query system_traces.events for TracingEvents
         let mut traces_events_query = Query::new(crate::tracing::TRACES_EVENTS_QUERY_STR);
         traces_events_query.config.consistency = consistency;
-        traces_events_query.set_page_size(1024);
+        traces_events_query.set_page_size(TRACING_QUERY_PAGE_SIZE);
 
         let (traces_session_res, traces_events_res) = tokio::try_join!(
             self.query(traces_session_query, (tracing_id,)),
