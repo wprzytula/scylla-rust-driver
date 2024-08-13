@@ -39,6 +39,19 @@ async fn main() -> Result<()> {
         println!("a, b, c: {}, {}, {}", a, b, c);
     }
 
+    // Iterate through select result with paging
+    let mut raw_iter = session
+        .query_iter("SELECT a, b, c FROM examples_ks.select_paging", &[])
+        .await?;
+
+    while let Some(column_iter) = raw_iter.next().await.transpose()? {
+        let (a, b, c) =
+            <(i32, i32, &str) as scylla::deserialize::DeserializeRow>::deserialize(column_iter)?;
+        println!("a, b, c: {}, {}, {}", a, b, c);
+    }
+    let mut typed_iter = raw_iter.into_typed::<(i32, i32, &str)>()?;
+    let row = typed_iter.next().await;
+
     let paged_query = Query::new("SELECT a, b, c FROM examples_ks.select_paging").with_page_size(6);
     let res1 = session.query(paged_query.clone(), &[]).await?;
     println!(
