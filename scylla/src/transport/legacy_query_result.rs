@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 use crate::frame::response::cql_to_rust::{FromRow, FromRowError};
 use crate::frame::response::result::ColumnSpec;
 use crate::frame::response::result::Row;
@@ -10,6 +12,10 @@ use uuid::Uuid;
 /// Contains all rows returned by the database and some more information
 #[non_exhaustive]
 #[derive(Default, Debug)]
+#[deprecated(
+    since = "0.14.0",
+    note = "Legacy deserialization API is inefficient and is going to be removed soon"
+)]
 pub struct LegacyQueryResult {
     /// Rows returned by the database.\
     /// Queries like `SELECT` will have `Some(Vec)`, while queries like `INSERT` will have `None`.\

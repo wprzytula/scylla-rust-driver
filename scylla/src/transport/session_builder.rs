@@ -3,6 +3,7 @@
 use super::connection::SelfIdentity;
 use super::errors::NewSessionError;
 use super::execution_profile::ExecutionProfileHandle;
+#[allow(deprecated)]
 use super::session::{
     AddressTranslator, CurrentDeserializationApi, GenericSession, LegacyDeserializationApi,
     SessionConfig,
@@ -537,6 +538,11 @@ impl<K: SessionBuilderKind> GenericSessionBuilder<K> {
     /// # Ok(())
     /// # }
     /// ```
+    #[deprecated(
+        since = "0.14.0",
+        note = "Legacy deserialization API is inefficient and is going to be removed soon"
+    )]
+    #[allow(deprecated)]
     pub async fn build_legacy(
         &self,
     ) -> Result<GenericSession<LegacyDeserializationApi>, NewSessionError> {

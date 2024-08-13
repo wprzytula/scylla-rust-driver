@@ -676,6 +676,11 @@ impl RawIterator {
 
     /// Converts this iterator into an iterator over rows parsed as given type,
     /// using the legacy deserialization framework.
+    #[deprecated(
+        since = "0.14.0",
+        note = "Legacy deserialization API is inefficient and is going to be removed soon"
+    )]
+    #[allow(deprecated)]
     #[inline]
     pub fn into_legacy(self) -> LegacyRowIterator {
         LegacyRowIterator { raw_iterator: self }
@@ -1062,10 +1067,15 @@ where
     }
 }
 
+#[deprecated(
+    since = "0.14.0",
+    note = "Legacy deserialization API is inefficient and is going to be removed soon"
+)]
 pub struct LegacyRowIterator {
     raw_iterator: RawIterator,
 }
 
+#[allow(deprecated)]
 impl Stream for LegacyRowIterator {
     type Item = Result<Row, QueryError>;
 
@@ -1090,6 +1100,7 @@ impl Stream for LegacyRowIterator {
     }
 }
 
+#[allow(deprecated)]
 impl LegacyRowIterator {
     /// If tracing was enabled returns tracing ids of all finished page queries
     pub fn get_tracing_ids(&self) -> &[Uuid] {
@@ -1112,11 +1123,17 @@ impl LegacyRowIterator {
 /// Iterator over rows returned by paged queries
 /// where each row is parsed as the given type\
 /// Returned by `RowIterator::into_typed`
+#[deprecated(
+    since = "0.14.0",
+    note = "Legacy deserialization API is inefficient and is going to be removed soon"
+)]
+#[allow(deprecated)]
 pub struct LegacyTypedRowIterator<RowT> {
     row_iterator: LegacyRowIterator,
     _phantom_data: std::marker::PhantomData<RowT>,
 }
 
+#[allow(deprecated)]
 impl<RowT> LegacyTypedRowIterator<RowT> {
     /// If tracing was enabled returns tracing ids of all finished page queries
     #[inline]
@@ -1145,6 +1162,7 @@ pub enum NextRowError {
 
 /// Fetching pages is asynchronous so `LegacyTypedRowIterator` does not implement the `Iterator` trait.\
 /// Instead it uses the asynchronous `Stream` trait
+#[allow(deprecated)]
 impl<RowT: FromRow> Stream for LegacyTypedRowIterator<RowT> {
     type Item = Result<RowT, NextRowError>;
 
@@ -1158,4 +1176,5 @@ impl<RowT: FromRow> Stream for LegacyTypedRowIterator<RowT> {
 }
 
 // LegacyTypedRowIterator can be moved freely for any RowT so it's Unpin
+#[allow(deprecated)]
 impl<RowT> Unpin for LegacyTypedRowIterator<RowT> {}

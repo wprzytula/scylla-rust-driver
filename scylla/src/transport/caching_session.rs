@@ -2,9 +2,12 @@ use crate::batch::{Batch, BatchStatement};
 use crate::prepared_statement::PreparedStatement;
 use crate::query::Query;
 use crate::transport::errors::QueryError;
+#[allow(deprecated)]
 use crate::transport::iterator::LegacyRowIterator;
 use crate::transport::partitioner::PartitionerName;
-use crate::{LegacyQueryResult, QueryResult};
+#[allow(deprecated)]
+use crate::LegacyQueryResult;
+use crate::QueryResult;
 use bytes::Bytes;
 use dashmap::DashMap;
 use futures::future::try_join_all;
@@ -15,6 +18,7 @@ use std::collections::hash_map::RandomState;
 use std::hash::BuildHasher;
 
 use super::iterator::RawIterator;
+#[allow(deprecated)]
 use super::session::{
     CurrentDeserializationApi, DeserializationApiKind, GenericSession, LegacyDeserializationApi,
 };
@@ -48,6 +52,12 @@ where
 }
 
 pub type CachingSession<S = RandomState> = GenericCachingSession<CurrentDeserializationApi, S>;
+
+#[deprecated(
+    since = "0.14.0",
+    note = "Legacy deserialization API is inefficient and is going to be removed soon"
+)]
+#[allow(deprecated)]
 pub type LegacyCachingSession<S = RandomState> = GenericCachingSession<LegacyDeserializationApi, S>;
 
 impl<DeserApi, S> GenericCachingSession<DeserApi, S>
@@ -142,6 +152,11 @@ where
     }
 }
 
+#[deprecated(
+    since = "0.14.0",
+    note = "Legacy deserialization API is inefficient and is going to be removed soon"
+)]
+#[allow(deprecated)]
 impl<S> GenericCachingSession<LegacyDeserializationApi, S>
 where
     S: BuildHasher + Clone,
