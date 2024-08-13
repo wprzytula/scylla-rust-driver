@@ -1025,7 +1025,7 @@ async fn test_tracing_query_iter(session: &Session, ks: String) {
     assert!(untraced_row_iter.get_tracing_ids().is_empty());
 
     // The same is true for TypedRowIter
-    let untraced_typed_row_iter = untraced_row_iter.into_typed::<(i32,)>();
+    let untraced_typed_row_iter = untraced_row_iter.into_typed::<(&str,)>();
     assert!(untraced_typed_row_iter.get_tracing_ids().is_empty());
 
     // A query with tracing enabled has a tracing ids in result
@@ -1040,7 +1040,7 @@ async fn test_tracing_query_iter(session: &Session, ks: String) {
     assert!(!traced_row_iter.get_tracing_ids().is_empty());
 
     // The same is true for TypedRowIter
-    let traced_typed_row_iter = traced_row_iter.into_typed::<(i32,)>();
+    let traced_typed_row_iter = traced_row_iter.into_typed::<(&str,)>();
     assert!(!traced_typed_row_iter.get_tracing_ids().is_empty());
 
     for tracing_id in traced_typed_row_iter.get_tracing_ids() {
@@ -1063,7 +1063,7 @@ async fn test_tracing_execute_iter(session: &Session, ks: String) {
     assert!(untraced_row_iter.get_tracing_ids().is_empty());
 
     // The same is true for TypedRowIter
-    let untraced_typed_row_iter = untraced_row_iter.into_typed::<(i32,)>();
+    let untraced_typed_row_iter = untraced_row_iter.into_typed::<(&str,)>();
     assert!(untraced_typed_row_iter.get_tracing_ids().is_empty());
 
     // A prepared statement with tracing enabled has a tracing ids in result
@@ -1081,7 +1081,7 @@ async fn test_tracing_execute_iter(session: &Session, ks: String) {
     assert!(!traced_row_iter.get_tracing_ids().is_empty());
 
     // The same is true for TypedRowIter
-    let traced_typed_row_iter = traced_row_iter.into_typed::<(i32,)>();
+    let traced_typed_row_iter = traced_row_iter.into_typed::<(&str,)>();
     assert!(!traced_typed_row_iter.get_tracing_ids().is_empty());
 
     for tracing_id in traced_typed_row_iter.get_tracing_ids() {
