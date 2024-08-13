@@ -430,6 +430,22 @@ pub struct ResultMetadata {
     pub col_specs: Vec<ColumnSpec>,
 }
 
+// Test utils for scylla crate.
+#[doc(hidden)]
+impl ResultMetadata {
+    pub fn new_for_test(
+        col_count: usize,
+        paging_state: Option<Bytes>,
+        col_specs: Vec<ColumnSpec>,
+    ) -> Self {
+        Self {
+            col_count,
+            paging_state,
+            col_specs,
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 pub struct PartitionKeyIndex {
     /// index in the serialized values
@@ -523,6 +539,18 @@ impl RawRows {
             rows,
             serialized_size: self.raw_rows.len(),
         })
+    }
+}
+
+// Test utils for scylla crate.
+#[doc(hidden)]
+impl RawRows {
+    pub fn new_for_test(metadata: ResultMetadata, rows_count: usize, raw_rows: Bytes) -> Self {
+        Self {
+            metadata,
+            rows_count,
+            raw_rows,
+        }
     }
 }
 
