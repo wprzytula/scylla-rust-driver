@@ -678,6 +678,11 @@ impl QueryPager {
     /// using the legacy deserialization framework.
     /// This is inefficient, because all rows are being eagerly deserialized
     /// to a middle-man [Row] type.
+    #[deprecated(
+        since = "0.15.0",
+        note = "Legacy deserialization API is inefficient and is going to be removed soon"
+    )]
+    #[allow(deprecated)]
     #[inline]
     pub fn into_legacy(self) -> LegacyRowIterator {
         LegacyRowIterator::new(self)
@@ -1092,11 +1097,16 @@ where
 }
 
 mod legacy {
+    #![allow(deprecated)]
     use super::*;
 
     /// Iterator over rows returned by paged queries.
     ///
     /// Allows to easily access rows without worrying about handling multiple pages.
+    #[deprecated(
+        since = "0.15.0",
+        note = "Legacy deserialization API is inefficient and is going to be removed soon"
+    )]
     pub struct LegacyRowIterator {
         raw_stream: QueryPager,
     }
@@ -1145,6 +1155,11 @@ mod legacy {
     /// Iterator over rows returned by paged queries
     /// where each row is parsed as the given type\
     /// Returned by `RowIterator::into_typed`
+    #[deprecated(
+        since = "0.15.0",
+        note = "Legacy deserialization API is inefficient and is going to be removed soon"
+    )]
+    #[allow(deprecated)]
     pub struct LegacyTypedRowIterator<RowT> {
         row_iterator: LegacyRowIterator,
         _phantom_data: std::marker::PhantomData<RowT>,
@@ -1193,4 +1208,5 @@ mod legacy {
     // LegacyTypedRowIterator can be moved freely for any RowT so it's Unpin
     impl<RowT> Unpin for LegacyTypedRowIterator<RowT> {}
 }
+#[allow(deprecated)]
 pub use legacy::{LegacyRowIterator, LegacyTypedRowIterator, NextRowError};
