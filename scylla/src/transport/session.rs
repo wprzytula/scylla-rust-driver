@@ -511,9 +511,9 @@ impl GenericSession<CurrentDeserializationApi> {
     ///
     /// # Examples
     /// ```rust
-    /// # use scylla::LegacySession;
+    /// # use scylla::Session;
     /// # use std::error::Error;
-    /// # async fn check_only_compiles(session: &LegacySession) -> Result<(), Box<dyn Error>> {
+    /// # async fn check_only_compiles(session: &Session) -> Result<(), Box<dyn Error>> {
     /// // Insert an int and text into a table.
     /// session
     ///     .query_unpaged(
@@ -525,23 +525,22 @@ impl GenericSession<CurrentDeserializationApi> {
     /// # }
     /// ```
     /// ```rust
-    /// # use scylla::LegacySession;
+    /// # use scylla::Session;
     /// # use std::error::Error;
-    /// # async fn check_only_compiles(session: &LegacySession) -> Result<(), Box<dyn Error>> {
+    /// # async fn check_only_compiles(session: &Session) -> Result<(), Box<dyn Error>> {
     /// use scylla::IntoTypedRows;
     ///
     /// // Read rows containing an int and text.
     /// // Keep in mind that all results come in one response (no paging is done!),
     /// // so the memory footprint and latency may be huge!
     /// // To prevent that, use `Session::query_iter` or `Session::query_single_page`.
-    /// let rows_opt = session
-    /// .query_unpaged("SELECT a, b FROM ks.tab", &[])
-    ///     .await?
-    ///     .rows;
+    /// let query_result = session
+    ///     .query_unpaged("SELECT a, b FROM ks.tab", &[])
+    ///     .await?;
     ///
-    /// if let Some(rows) = rows_opt {
-    ///     for row in rows.into_typed::<(i32, String)>() {
-    ///         // Parse row as int and text \
+    /// if let Some(rows) = query_result.maybe_rows::<(i32, String)>()? {
+    ///     for row in rows {
+    ///         // Parse row as int and text.
     ///         let (int_val, text_val): (i32, String) = row?;
     ///     }
     /// }
@@ -571,9 +570,9 @@ impl GenericSession<CurrentDeserializationApi> {
     /// # Example
     ///
     /// ```rust
-    /// # use scylla::LegacySession;
+    /// # use scylla::Session;
     /// # use std::error::Error;
-    /// # async fn check_only_compiles(session: &LegacySession) -> Result<(), Box<dyn Error>> {
+    /// # async fn check_only_compiles(session: &Session) -> Result<(), Box<dyn Error>> {
     /// use std::ops::ControlFlow;
     /// use scylla::statement::PagingState;
     ///
@@ -585,7 +584,7 @@ impl GenericSession<CurrentDeserializationApi> {
     ///        .await?;
     ///
     ///    // Do something with a single page of results.
-    ///    for row in res.rows_typed::<(i32, String)>()? {
+    ///    for row in res.rows::<(i32, String)>()? {
     ///        let (a, b) = row?;
     ///    }
     ///
@@ -635,16 +634,16 @@ impl GenericSession<CurrentDeserializationApi> {
     /// # Example
     ///
     /// ```rust
-    /// # use scylla::LegacySession;
+    /// # use scylla::Session;
     /// # use std::error::Error;
-    /// # async fn check_only_compiles(session: &LegacySession) -> Result<(), Box<dyn Error>> {
+    /// # async fn check_only_compiles(session: &Session) -> Result<(), Box<dyn Error>> {
     /// use scylla::IntoTypedRows;
     /// use futures::stream::StreamExt;
     ///
     /// let mut rows_stream = session
     ///    .query_iter("SELECT a, b FROM ks.t", &[])
     ///    .await?
-    ///    .into_typed::<(i32, i32)>();
+    ///    .into_typed::<(i32, i32)>()?;
     ///
     /// while let Some(next_row_res) = rows_stream.next().await {
     ///     let (a, b): (i32, i32) = next_row_res?;
@@ -688,9 +687,9 @@ impl GenericSession<CurrentDeserializationApi> {
     ///
     /// # Example
     /// ```rust
-    /// # use scylla::LegacySession;
+    /// # use scylla::Session;
     /// # use std::error::Error;
-    /// # async fn check_only_compiles(session: &LegacySession) -> Result<(), Box<dyn Error>> {
+    /// # async fn check_only_compiles(session: &Session) -> Result<(), Box<dyn Error>> {
     /// use scylla::prepared_statement::PreparedStatement;
     ///
     /// // Prepare the query for later execution
@@ -724,9 +723,9 @@ impl GenericSession<CurrentDeserializationApi> {
     /// # Example
     ///
     /// ```rust
-    /// # use scylla::LegacySession;
+    /// # use scylla::Session;
     /// # use std::error::Error;
-    /// # async fn check_only_compiles(session: &LegacySession) -> Result<(), Box<dyn Error>> {
+    /// # async fn check_only_compiles(session: &Session) -> Result<(), Box<dyn Error>> {
     /// use std::ops::ControlFlow;
     /// use scylla::query::Query;
     /// use scylla::statement::{PagingState, PagingStateResponse};
@@ -746,7 +745,7 @@ impl GenericSession<CurrentDeserializationApi> {
     ///         .await?;
     ///
     ///    // Do something with a single page of results.
-    ///    for row in res.rows_typed::<(i32, String)>()? {
+    ///    for row in res.rows::<(i32, String)>()? {
     ///        let (a, b) = row?;
     ///    }
     ///
@@ -792,12 +791,11 @@ impl GenericSession<CurrentDeserializationApi> {
     /// # Example
     ///
     /// ```rust
-    /// # use scylla::LegacySession;
+    /// # use scylla::Session;
     /// # use std::error::Error;
-    /// # async fn check_only_compiles(session: &LegacySession) -> Result<(), Box<dyn Error>> {
+    /// # async fn check_only_compiles(session: &Session) -> Result<(), Box<dyn Error>> {
     /// use scylla::prepared_statement::PreparedStatement;
     /// use scylla::IntoTypedRows;
-    /// use futures::stream::StreamExt;
     ///
     /// // Prepare the query for later execution
     /// let prepared: PreparedStatement = session
@@ -808,7 +806,7 @@ impl GenericSession<CurrentDeserializationApi> {
     /// let mut rows_stream = session
     ///    .execute_iter(prepared, &[])
     ///    .await?
-    ///    .into_typed::<(i32, i32)>();
+    ///    .into_typed::<(i32, i32)>()?;
     ///
     /// while let Some(next_row_res) = rows_stream.next().await {
     ///     let (a, b): (i32, i32) = next_row_res?;
@@ -844,9 +842,9 @@ impl GenericSession<CurrentDeserializationApi> {
     ///
     /// # Example
     /// ```rust
-    /// # use scylla::LegacySession;
+    /// # use scylla::Session;
     /// # use std::error::Error;
-    /// # async fn check_only_compiles(session: &LegacySession) -> Result<(), Box<dyn Error>> {
+    /// # async fn check_only_compiles(session: &Session) -> Result<(), Box<dyn Error>> {
     /// use scylla::batch::Batch;
     ///
     /// let mut batch: Batch = Default::default();
@@ -973,13 +971,13 @@ where
     /// ```rust
     /// # use std::error::Error;
     /// # async fn check_only_compiles() -> Result<(), Box<dyn Error>> {
-    /// use scylla::{LegacySession, SessionConfig};
+    /// use scylla::{Session, SessionConfig};
     /// use scylla::transport::KnownNode;
     ///
     /// let mut config = SessionConfig::new();
     /// config.known_nodes.push(KnownNode::Hostname("127.0.0.1:9042".to_string()));
     ///
-    /// let session: LegacySession = LegacySession::connect(config).await?;
+    /// let session: Session = Session::connect(config).await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -1305,9 +1303,9 @@ where
     ///
     /// # Example
     /// ```rust
-    /// # use scylla::LegacySession;
+    /// # use scylla::Session;
     /// # use std::error::Error;
-    /// # async fn check_only_compiles(session: &LegacySession) -> Result<(), Box<dyn Error>> {
+    /// # async fn check_only_compiles(session: &Session) -> Result<(), Box<dyn Error>> {
     /// use scylla::prepared_statement::PreparedStatement;
     ///
     /// // Prepare the query for later execution
@@ -1629,9 +1627,9 @@ where
     /// /// # Example
     /// ```rust
     /// # extern crate scylla;
-    /// # use scylla::LegacySession;
+    /// # use scylla::Session;
     /// # use std::error::Error;
-    /// # async fn check_only_compiles(session: &LegacySession) -> Result<(), Box<dyn Error>> {
+    /// # async fn check_only_compiles(session: &Session) -> Result<(), Box<dyn Error>> {
     /// use scylla::batch::Batch;
     ///
     /// // Create a batch statement with unprepared statements
@@ -1690,10 +1688,10 @@ where
     /// * `case_sensitive` - if set to true the generated query will put keyspace name in quotes
     /// # Example
     /// ```rust
-    /// # use scylla::{LegacySession, SessionBuilder};
+    /// # use scylla::{Session, SessionBuilder};
     /// # use scylla::transport::Compression;
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let session = SessionBuilder::new().known_node("127.0.0.1:9042").build_legacy().await?;
+    /// # let session = SessionBuilder::new().known_node("127.0.0.1:9042").build().await?;
     /// session
     ///     .query_unpaged("INSERT INTO my_keyspace.tab (a) VALUES ('test1')", &[])
     ///     .await?;
