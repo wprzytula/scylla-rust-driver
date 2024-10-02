@@ -288,7 +288,7 @@ mod tests {
         );
         let lending_row_iter =
             RawRowsLendingIterator::new(RawRowsWithDeserializedMetadata::new_for_test(
-                ResultMetadata::new_for_test(specs.len(), specs),
+                ResultMetadata::new_for_test(specs.len(), None, specs),
                 2,
                 raw_data,
             ));
@@ -326,12 +326,12 @@ mod tests {
             Vec::leak(specs.clone()),
             FrameSlice::new(Box::leak(Box::new(raw_data.clone()))),
         );
-        let lending_row_iter =
-            RawRowsLendingIterator::new(RawRowsWithDeserializedMetadata::new_for_test(
-                ResultMetadata::new_for_test(specs.len(), specs),
-                2,
-                raw_data,
-            ));
+        let lending_row_iter = RawRowsLendingIterator::deserialize(RawRows::new_for_test(
+            Arc::new(ResultMetadata::new_for_test(specs.len(), None, specs)),
+            2,
+            raw_data,
+        ))
+        .unwrap();
         check(row_iter);
         check(lending_row_iter);
 

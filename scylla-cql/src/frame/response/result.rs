@@ -524,6 +524,7 @@ impl<'frame> ColumnSpec<'frame> {
 #[derive(Debug, Clone)]
 pub struct ResultMetadata<'a> {
     col_count: usize,
+    table_spec: Option<TableSpec<'a>>,
     col_specs: Vec<ColumnSpec<'a>>,
 }
 
@@ -534,6 +535,7 @@ impl<'a> ResultMetadata<'a> {
     pub fn mock_empty() -> Self {
         Self {
             col_count: 0,
+            table_spec: None,
             col_specs: Vec::new(),
         }
     }
@@ -553,9 +555,14 @@ impl<'a> ResultMetadata<'a> {
 #[doc(hidden)]
 impl<'a> ResultMetadata<'a> {
     #[inline]
-    pub fn new_for_test(col_count: usize, col_specs: Vec<ColumnSpec<'a>>) -> Self {
+    pub fn new_for_test(
+        col_count: usize,
+        table_spec: Option<TableSpec<'a>>,
+        col_specs: Vec<ColumnSpec<'a>>,
+    ) -> Self {
         Self {
             col_count,
+            table_spec,
             col_specs,
         }
     }
@@ -599,6 +606,7 @@ pub struct PreparedMetadata {
     /// pk_indexes are sorted by `index` and can be reordered in partition key order
     /// using `sequence` field
     pub pk_indexes: Vec<PartitionKeyIndex>,
+    pub table_spec: Option<TableSpec<'static>>,
     pub col_specs: Vec<ColumnSpec<'static>>,
 }
 
@@ -932,7 +940,7 @@ fn deser_table_spec_for_col_spec<'frame>(
 }
 
 macro_rules! generate_deser_col_specs {
-    ($deser_col_specs: ident, $l: lifetime, $deser_type: ident, $make_col_spec: expr $(,)?) => {
+    ($deser_col_specs: ident, $l: lifetime, $deser_type: ident, $transform_table_spec: expr, $make_col_spec: expr $(,)?) => {
         /// Deserializes col specs (part of ResultMetadata or PreparedMetadata)
         /// in the form mentioned by its name.
         ///
@@ -946,7 +954,7 @@ macro_rules! generate_deser_col_specs {
             buf: &mut &'frame [u8],
             global_table_spec: Option<TableSpec<'frame>>,
             col_count: usize,
-        ) -> StdResult<Vec<ColumnSpec<$l>>, ColumnSpecParseError> {
+        ) -> StdResult<(Option<TableSpec<$l>>, Vec<ColumnSpec<$l>>), ColumnSpecParseError> {
             let global_table_spec_provided = global_table_spec.is_some();
             let mut known_table_spec = global_table_spec;
 
@@ -965,7 +973,7 @@ macro_rules! generate_deser_col_specs {
                 let col_spec = $make_col_spec(name, typ, table_spec);
                 col_specs.push(col_spec);
             }
-            Ok(col_specs)
+            Ok(($transform_table_spec(known_table_spec), col_specs))
         }
     };
 }
@@ -974,6 +982,7 @@ generate_deser_col_specs!(
     deser_col_specs_borrowed,
     'frame,
     deser_type_borrowed,
+    |table_spec| table_spec,
     ColumnSpec::borrowed,
 );
 
@@ -981,6 +990,7 @@ generate_deser_col_specs!(
     deser_col_specs_owned,
     'static,
     deser_type_owned,
+    |table_spec: Option<TableSpec>| table_spec.map(TableSpec::into_owned),
     |name: &str, typ, table_spec: TableSpec| ColumnSpec::owned(name.to_owned(), typ, table_spec.into_owned()),
 );
 
@@ -1002,18 +1012,21 @@ fn deser_result_metadata(
 
     let paging_state = PagingStateResponse::new_from_raw_bytes(raw_paging_state);
 
-    let col_specs = if no_metadata {
-        vec![]
+    let (table_spec, col_specs) = if no_metadata {
+        (None, vec![])
     } else {
         let global_table_spec = global_tables_spec
             .then(|| deser_table_spec(buf))
             .transpose()?;
 
-        deser_col_specs_owned(buf, global_table_spec, col_count)?
+        let (table_spec, col_specs) = deser_col_specs_owned(buf, global_table_spec, col_count)?;
+        let table_spec = table_spec.map(TableSpec::into_owned);
+        (table_spec, col_specs)
     };
 
     let metadata = ResultMetadata {
         col_count,
+        table_spec,
         col_specs,
     };
     Ok((metadata, paging_state))
@@ -1083,7 +1096,7 @@ macro_rules! generate_deserialize_metadata {
                             .transpose()
                             .map_err(ResultMetadataParseError::from)?;
 
-                        let col_specs = $deser_col_specs(
+                        let (table_spec, col_specs) = $deser_col_specs(
                             frame_slice.as_slice_mut(),
                             global_table_spec,
                             self.col_count,
@@ -1092,6 +1105,7 @@ macro_rules! generate_deserialize_metadata {
 
                         ResultMetadata {
                             col_count: self.col_count,
+                            table_spec,
                             col_specs,
                         }
                     };
@@ -1161,11 +1175,12 @@ fn deser_prepared_metadata(
         .then(|| deser_table_spec(buf))
         .transpose()?;
 
-    let col_specs = deser_col_specs_owned(buf, global_table_spec, col_count)?;
+    let (table_spec, col_specs) = deser_col_specs_owned(buf, global_table_spec, col_count)?;
 
     Ok(PreparedMetadata {
         flags,
         col_count,
+        table_spec: table_spec.map(TableSpec::into_owned),
         pk_indexes,
         col_specs,
     })
