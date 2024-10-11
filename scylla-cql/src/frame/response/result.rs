@@ -527,19 +527,12 @@ pub struct ResultMetadata<'a> {
 
 impl<'a> ResultMetadata<'a> {
     #[inline]
+    // Preferred to implementing Default, because users shouldn't be able to create
+    // empty ResultMetadata.
     pub fn mock_empty() -> Self {
         Self {
             col_count: 0,
             col_specs: Vec::new(),
-        }
-    }
-
-    #[inline]
-    #[doc(hidden)]
-    pub fn new_for_test(col_count: usize, col_specs: Vec<ColumnSpec<'static>>) -> Self {
-        Self {
-            col_count,
-            col_specs,
         }
     }
 
@@ -551,6 +544,18 @@ impl<'a> ResultMetadata<'a> {
     #[inline]
     pub fn col_specs(&self) -> &[ColumnSpec] {
         &self.col_specs
+    }
+}
+
+// Test utils for scylla crate.
+#[doc(hidden)]
+impl<'a> ResultMetadata<'a> {
+    #[inline]
+    pub fn new_for_test(col_count: usize, col_specs: Vec<ColumnSpec<'a>>) -> Self {
+        Self {
+            col_count,
+            col_specs,
+        }
     }
 }
 
