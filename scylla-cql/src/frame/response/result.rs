@@ -1105,100 +1105,110 @@ impl RawMetadataAndRawRows {
     }
 }
 
-macro_rules! generate_deserialize_metadata {
-    ($deserialize_metadata: ident, $metadata_l: lifetime, $raw_rows_kind: ty, $raw_rows_constructor: expr, $use_cached_metadata: expr, $deser_col_specs: ident$(,)?) => {
-        /// Deserializes ResultMetadata in the form mentioned by its name,
-        /// and deserializes rows count. Keeps rows in the serialized form.
-        ///
-        /// If metadata is cached (in the PreparedStatement), it is reused (shared) from cache
-        /// instead of deserializing.
-        pub fn $deserialize_metadata(
-            &self,
-        ) -> StdResult<DeserializedMetadataAndRawRows<$metadata_l, $raw_rows_kind>, RowsParseError>
-        {
-            let mut frame_slice = FrameSlice::new(&self.raw_metadata_and_rows);
-
-            let metadata = match self.cached_metadata.as_ref() {
-                Some(cached) if self.no_metadata => {
-                    // Server sent no metadata, but we have metadata cached. This means that we asked the server
-                    // not to send metadata in the response as an optimization. We use cached metadata instead.
-                    $use_cached_metadata(cached)
-                }
-                None if self.no_metadata => {
-                    // Server sent no metadata and we have no metadata cached. Having no metadata cached,
-                    // we wouldn't have asked the server for skipping metadata. Therefore, this is most probably
-                    // not a SELECT, because in such case the server would send empty metadata both in Prepared
-                    // and in Result responses.
-                    ResultMetadataHolder::BorrowedOrOwned(Cow::Owned(ResultMetadata::mock_empty()))
-                }
-                Some(_) | None => {
-                    // Two possibilities:
-                    // 1) no cached_metadata provided. Server is supposed to provide the result metadata.
-                    // 2) cached metadata present (so we should have asked for skipping metadata),
-                    //    but the server sent result metadata anyway.
-                    // In case 1 we have to deserialize result metadata. In case 2 we choose to do that,
-                    // too, because it's suspicious, so we had better use the new metadata just in case.
-                    // Also, we simply need to advance the buffer pointer past metadata, and this requires
-                    // parsing metadata.
-                    let server_metadata = {
-                        let global_table_spec = self
-                            .global_tables_spec
-                            .then(|| deser_table_spec(frame_slice.as_slice_mut()))
-                            .transpose()
-                            .map_err(ResultMetadataParseError::from)?;
-
-                        let col_specs = $deser_col_specs(
-                            frame_slice.as_slice_mut(),
-                            global_table_spec,
-                            self.col_count,
-                        )
-                        .map_err(ResultMetadataParseError::from)?;
-
-                        ResultMetadata {
-                            col_count: self.col_count,
-                            col_specs,
-                        }
-                    };
-                    if server_metadata.col_count() != server_metadata.col_specs().len() {
-                        return Err(RowsParseError::ColumnCountMismatch {
-                            col_count: server_metadata.col_count(),
-                            col_specs_count: server_metadata.col_specs().len(),
-                        });
-                    }
-                    ResultMetadataHolder::BorrowedOrOwned(Cow::Owned(server_metadata))
-                }
-            };
-
-            let rows_count: usize = types::read_int_length(frame_slice.as_slice_mut())
-                .map_err(RowsParseError::RowsCountParseError)?;
-
-            Ok(DeserializedMetadataAndRawRows {
-                metadata,
-                rows_count,
-                raw_rows: $raw_rows_constructor(frame_slice),
-            })
-        }
-    };
-}
+type DeserColSpecsFn<'this, 'result> =
+    fn(
+        &mut &'this [u8],
+        Option<TableSpec<'this>>,
+        usize,
+    ) -> StdResult<Vec<ColumnSpec<'result>>, ColumnSpecParseError>;
 
 impl RawMetadataAndRawRows {
-    generate_deserialize_metadata!(
-        deserialize_borrowed_metadata,
-        '_,
-        RawRowsBorrowed<'_>,
-        RawRowsBorrowed,
-        |cached| ResultMetadataHolder::BorrowedOrOwned(Cow::Borrowed(cached)),
-        deser_col_specs_borrowed,
-    );
+    /// Deserializes ResultMetadata in the form mentioned by its name,
+    /// and deserializes rows count. Keeps rows in the serialized form.
+    ///
+    /// If metadata is cached (in the PreparedStatement), it is reused (shared) from cache
+    /// instead of deserializing.
+    fn deserialize_metadata_generic<'this, 'result, T: RawRowsKind>(
+        &'this self,
+        raw_rows_constructor: fn(FrameSlice<'this>) -> T,
+        use_cached_metadata: fn(
+            &'this Arc<ResultMetadata<'static>>,
+        ) -> ResultMetadataHolder<'result>,
+        deser_col_specs: DeserColSpecsFn<'this, 'result>,
+    ) -> StdResult<DeserializedMetadataAndRawRows<'result, T>, RowsParseError> {
+        let mut frame_slice = FrameSlice::new(&self.raw_metadata_and_rows);
 
-    generate_deserialize_metadata!(
-        deserialize_owned_metadata,
-        'static,
-        RawRowsOwned,
-        |frame_slice: FrameSlice| RawRowsOwned(frame_slice.to_bytes()),
-        |cached| ResultMetadataHolder::SharedCached(Arc::clone(cached)),
-        deser_col_specs_owned,
-    );
+        let metadata = match self.cached_metadata.as_ref() {
+            Some(cached) if self.no_metadata => {
+                // Server sent no metadata, but we have metadata cached. This means that we asked the server
+                // not to send metadata in the response as an optimization. We use cached metadata instead.
+                //$use_cached_metadata(cached)
+                use_cached_metadata(cached)
+            }
+            None if self.no_metadata => {
+                // Server sent no metadata and we have no metadata cached. Having no metadata cached,
+                // we wouldn't have asked the server for skipping metadata. Therefore, this is most probably
+                // not a SELECT, because in such case the server would send empty metadata both in Prepared
+                // and in Result responses.
+                ResultMetadataHolder::BorrowedOrOwned(Cow::Owned(ResultMetadata::mock_empty()))
+            }
+            Some(_) | None => {
+                // Two possibilities:
+                // 1) no cached_metadata provided. Server is supposed to provide the result metadata.
+                // 2) cached metadata present (so we should have asked for skipping metadata),
+                //    but the server sent result metadata anyway.
+                // In case 1 we have to deserialize result metadata. In case 2 we choose to do that,
+                // too, because it's suspicious, so we had better use the new metadata just in case.
+                // Also, we simply need to advance the buffer pointer past metadata, and this requires
+                // parsing metadata.
+                let server_metadata = {
+                    let global_table_spec = self
+                        .global_tables_spec
+                        .then(|| deser_table_spec(frame_slice.as_slice_mut()))
+                        .transpose()
+                        .map_err(ResultMetadataParseError::from)?;
+
+                    let col_specs = deser_col_specs(
+                        frame_slice.as_slice_mut(),
+                        global_table_spec,
+                        self.col_count,
+                    )
+                    .map_err(ResultMetadataParseError::from)?;
+
+                    ResultMetadata {
+                        col_count: self.col_count,
+                        col_specs,
+                    }
+                };
+                if server_metadata.col_count() != server_metadata.col_specs().len() {
+                    return Err(RowsParseError::ColumnCountMismatch {
+                        col_count: server_metadata.col_count(),
+                        col_specs_count: server_metadata.col_specs().len(),
+                    });
+                }
+                ResultMetadataHolder::BorrowedOrOwned(Cow::Owned(server_metadata))
+            }
+        };
+
+        let rows_count: usize = types::read_int_length(frame_slice.as_slice_mut())
+            .map_err(RowsParseError::RowsCountParseError)?;
+
+        Ok(DeserializedMetadataAndRawRows {
+            metadata,
+            rows_count,
+            raw_rows: raw_rows_constructor(frame_slice),
+        })
+    }
+
+    pub fn deserialize_borrowed_metadata(
+        &self,
+    ) -> StdResult<DeserializedMetadataAndRawRows<'_, RawRowsBorrowed<'_>>, RowsParseError> {
+        self.deserialize_metadata_generic(
+            RawRowsBorrowed,
+            |cached| ResultMetadataHolder::BorrowedOrOwned(Cow::Borrowed(cached)),
+            deser_col_specs_borrowed,
+        )
+    }
+
+    pub fn deserialize_owned_metadata(
+        &self,
+    ) -> StdResult<DeserializedMetadataAndRawRows<'static, RawRowsOwned>, RowsParseError> {
+        self.deserialize_metadata_generic(
+            |frame_slice| RawRowsOwned(frame_slice.to_bytes()),
+            |cached| ResultMetadataHolder::SharedCached(Arc::clone(cached)),
+            deser_col_specs_owned,
+        )
+    }
 }
 
 fn deser_prepared_metadata(
