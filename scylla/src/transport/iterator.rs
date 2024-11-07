@@ -1,6 +1,7 @@
 //! Iterators over rows returned by paged queries
 
 use std::future::Future;
+use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::ops::ControlFlow;
 use std::pin::Pin;
@@ -981,6 +982,90 @@ impl QueryPager {
 
     fn is_current_page_exhausted(&self) -> bool {
         self.current_page.rows_remaining() == 0
+    }
+}
+
+mod type_check {
+    use super::*;
+
+    pub struct TypeChecked<RustT: RustType> {
+        phantom: PhantomData<RustT>,
+    }
+
+    impl<CqlT: RustType> TypeChecked<CqlT> {
+        fn new() -> Self {
+            Self {
+                phantom: PhantomData,
+            }
+        }
+    }
+
+    pub trait RustType: Sized {
+        fn type_check(col_specs: &[ColumnSpec]) -> Result<TypeChecked<Self>, TypeCheckError>;
+    }
+    pub struct RustString;
+    impl RustType for RustString {
+        fn type_check(col_specs: &[ColumnSpec]) -> Result<TypeChecked<Self>, TypeCheckError> {
+            <(String,) as DeserializeRow>::type_check(col_specs)?;
+            Ok(TypeChecked::new())
+        }
+    }
+
+    pub trait CompatibleDeserialization<RustT: RustType> {}
+
+    impl CompatibleDeserialization<RustString> for String {}
+    impl CompatibleDeserialization<RustString> for str {}
+    impl<'a> CompatibleDeserialization<RustString> for &'a str {}
+    impl<'a> CompatibleDeserialization<RustString> for (&'a str,) {}
+}
+pub use type_check::*;
+
+impl QueryPager {
+    pub fn type_checked<RustT: RustType>(
+        self,
+    ) -> Result<TypeCheckedLendingStream<RustT>, TypeCheckError> {
+        RustT::type_check(self.column_specs().inner())?;
+        Ok(TypeCheckedLendingStream {
+            pager: self,
+            phantom: PhantomData,
+        })
+    }
+}
+
+pub struct TypeCheckedLendingStream<RustT: RustType> {
+    pager: QueryPager,
+    phantom: PhantomData<RustT>,
+}
+
+impl<RustT: RustType> TypeCheckedLendingStream<RustT> {
+    /// Stream-like next() implementation for TypedRowLendingStream.
+    ///
+    /// It also works with borrowed types! For example, &str is supported.
+    /// However, this is not a Stream. To create a Stream, use `into_stream()`.
+    #[inline]
+    pub async fn next<'frame, RowT>(&'frame mut self) -> Option<Result<RowT, QueryError>>
+    where
+        RowT: CompatibleDeserialization<RustT> + DeserializeRow<'frame, 'frame>,
+    {
+        self.pager.next().await.map(|res| {
+            res.and_then(|column_iterator| {
+                <RowT as DeserializeRow>::deserialize(column_iterator)
+                    .map_err(|err| RowsParseError::from(err).into())
+            })
+        })
+    }
+}
+
+async fn _rows_lending_stream_allows_deserializing_borrowed_types() {
+    // Separate function to hide `unimplemented!()` at the call site from the compiler.
+    fn create_raw_stream() -> QueryPager {
+        unimplemented!();
+    }
+
+    let raw_stream: QueryPager = create_raw_stream();
+    let mut typed = raw_stream.type_checked::<RustString>().unwrap();
+    while let Some(row) = typed.next().await {
+        let _row: (&str,) = row.unwrap();
     }
 }
 
