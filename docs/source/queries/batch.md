@@ -146,6 +146,10 @@ For more information about sending values in a statement see [Query values](valu
 
 
 ### Performance
-Batch statements do not use token/shard aware load balancing, batches are sent to a random node.
+**Batches are routed according to** the token calculated based on **the first statement in the batch**, _if the first statement is a prepared statement_. In other cases (i.e., when the first statement in the batch is unprepared), batches do not use token/shard aware load balancing, which means they are sent to a random node.
 
-Use [prepared queries](prepared.md) for best performance
+In batches, use [prepared statements](prepared.md) (in contrast to [unprepared statements](simple.md)) for better performance.
+
+The best performance can thus be achieved when batching (prepared) statements targetting data that is present in the same replica.
+
+
