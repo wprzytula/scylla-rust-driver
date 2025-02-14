@@ -50,7 +50,6 @@ use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::convert::TryFrom;
 use std::net::{IpAddr, SocketAddr};
-use std::pin::Pin;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -59,8 +58,8 @@ use std::{
     cmp::Ordering,
     net::{Ipv4Addr, Ipv6Addr},
 };
+pub(crate) use tls_config::TlsConfig;
 pub use tls_config::TlsError;
-pub(crate) use tls_config::{Tls, TlsConfig};
 use tokio::io::{split, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::{TcpSocket, TcpStream};
 use tokio::sync::{mpsc, oneshot};
@@ -247,14 +246,25 @@ mod tls_config {
     #[non_exhaustive]
     pub enum TlsError {
         #[cfg(feature = "openssl-010")]
-        OpenSsl010(#[from] openssl::error::ErrorStack),
+        OpenSsl010ErrorStack(#[from] openssl::error::ErrorStack),
+        #[cfg(feature = "openssl-010")]
+        OpenSsl010Error(#[from] openssl::ssl::Error),
     }
 
     impl From<TlsError> for io::Error {
         fn from(value: TlsError) -> Self {
             match value {
                 #[cfg(feature = "openssl-010")]
-                TlsError::OpenSsl010(e) => e.into(),
+                TlsError::OpenSsl010ErrorStack(e) => e.into(),
+
+                // This is horrible, but I can't grasp how openssl lib has two distinct error types
+                // (ssl::Error and ErrorStack) and how they interact.
+                #[cfg(feature = "openssl-010")]
+                TlsError::OpenSsl010Error(e) => e.into_io_error().unwrap_or_else(|e| {
+                    e.ssl_error().cloned().map(Into::into).unwrap_or_else(|| {
+                        std::io::Error::new(io::ErrorKind::Other, format!("{:?}", e))
+                    })
+                }),
             }
         }
     }
@@ -289,9 +299,9 @@ mod tls_config {
 
         // Produces a new Tls object that is able to wrap a TCP stream.
         pub(crate) fn new_tls(&self) -> Result<Tls, TlsError> {
-            let tls = match &self.context {
+            let tls = match self.context {
                 #[cfg(feature = "openssl-010")]
-                TlsContext::OpenSsl010(context) => {
+                TlsContext::OpenSsl010(ref context) => {
                     #[allow(unused_mut)]
                     let mut ssl = openssl::ssl::Ssl::new(context)?;
                     #[cfg(feature = "cloud")]
@@ -1364,15 +1374,16 @@ impl Connection {
         router_handle: Arc<RouterHandle>,
         node_address: IpAddr,
     ) -> Result<RemoteHandle<()>, std::io::Error> {
-        if let Some(tls_config) = &config.tls_config {
-            let mut stream = match tls_config.new_tls()? {
-                #[cfg(feature = "openssl-010")]
-                Tls::OpenSsl010(ssl) => tokio_openssl::SslStream::new(ssl, stream)?,
-            };
-
-            let _pin = Pin::new(&mut stream).connect().await;
-
-            let (task, handle) = Self::router(
+        async fn spawn_router_and_get_handle(
+            config: ConnectionConfig,
+            stream: (impl AsyncRead + AsyncWrite + Send + 'static),
+            receiver: mpsc::Receiver<Task>,
+            error_sender: tokio::sync::oneshot::Sender<ConnectionError>,
+            orphan_notification_receiver: mpsc::UnboundedReceiver<RequestId>,
+            router_handle: Arc<RouterHandle>,
+            node_address: IpAddr,
+        ) -> RemoteHandle<()> {
+            let (task, handle) = Connection::router(
                 config,
                 stream,
                 receiver,
@@ -1383,10 +1394,32 @@ impl Connection {
             )
             .remote_handle();
             tokio::task::spawn(task);
-            return Ok(handle);
+            handle
         }
 
-        let (task, handle) = Self::router(
+        if let Some(tls_config) = &config.tls_config {
+            let tls = tls_config.new_tls()?;
+            match tls {
+                #[cfg(feature = "openssl-010")]
+                tls_config::Tls::OpenSsl010(ssl) => {
+                    let mut stream = tokio_openssl::SslStream::new(ssl, stream)
+                        .map_err(TlsError::OpenSsl010ErrorStack)?;
+                    let _ = std::pin::Pin::new(&mut stream).connect().await;
+                    return Ok(spawn_router_and_get_handle(
+                        config,
+                        stream,
+                        receiver,
+                        error_sender,
+                        orphan_notification_receiver,
+                        router_handle,
+                        node_address,
+                    )
+                    .await);
+                }
+            }
+        }
+
+        Ok(spawn_router_and_get_handle(
             config,
             stream,
             receiver,
@@ -1395,9 +1428,7 @@ impl Connection {
             router_handle,
             node_address,
         )
-        .remote_handle();
-        tokio::task::spawn(task);
-        Ok(handle)
+        .await)
     }
 
     async fn router(
