@@ -77,6 +77,10 @@ type PerKsTableResult<T, E> = PerKsTable<Result<T, E>>;
 pub(crate) enum SingleKeyspaceMetadataError {
     #[error(transparent)]
     MissingUDT(MissingUserDefinedType),
+    #[error("Partition key column with position {0} is missing from metadata")]
+    IncompletePartitionKey(i32),
+    #[error("Clustering key column with position {0} is missing from metadata")]
+    IncompleteClusteringKey(i32),
 }
 
 /// Allows to read current metadata from the cluster
@@ -1606,24 +1610,51 @@ async fn query_tables_schema(
     let mut all_partitioners = query_table_partitioners(conn).await?;
     let mut result = HashMap::new();
 
-    for ((keyspace_name, table_name), table_result) in tables_schema {
+    'tables_loop: for ((keyspace_name, table_name), table_result) in tables_schema {
         let keyspace_and_table_name = (keyspace_name, table_name);
 
-        let (columns, partition_key_columns, clustering_key_columns) = match table_result {
+        let (columns, mut partition_key_columns, mut clustering_key_columns) = match table_result {
             Ok(table) => table,
             Err(e) => {
                 let _ = result.insert(keyspace_and_table_name, Err(e));
                 continue;
             }
         };
-        let mut partition_key = vec!["".to_string(); partition_key_columns.len()];
-        for (position, column_name) in partition_key_columns {
-            partition_key[position as usize] = column_name;
+
+        let mut partition_key = Vec::with_capacity(partition_key_columns.len());
+        // unwrap: I don't see the point of handling the scenario of fetching over
+        // 2 * 10^9 columns.
+        for position in 0..partition_key_columns.len().try_into().unwrap() {
+            match partition_key_columns.remove(&position) {
+                Some(column_name) => partition_key.push(column_name),
+                None => {
+                    result.insert(
+                        keyspace_and_table_name,
+                        Err(SingleKeyspaceMetadataError::IncompletePartitionKey(
+                            position,
+                        )),
+                    );
+                    continue 'tables_loop;
+                }
+            }
         }
 
-        let mut clustering_key = vec!["".to_string(); clustering_key_columns.len()];
-        for (position, column_name) in clustering_key_columns {
-            clustering_key[position as usize] = column_name;
+        let mut clustering_key = Vec::with_capacity(clustering_key_columns.len());
+        // unwrap: I don't see the point of handling the scenario of fetching over
+        // 2 * 10^9 columns.
+        for position in 0..clustering_key_columns.len().try_into().unwrap() {
+            match clustering_key_columns.remove(&position) {
+                Some(column_name) => clustering_key.push(column_name),
+                None => {
+                    result.insert(
+                        keyspace_and_table_name,
+                        Err(SingleKeyspaceMetadataError::IncompleteClusteringKey(
+                            position,
+                        )),
+                    );
+                    continue 'tables_loop;
+                }
+            }
         }
 
         let partitioner = all_partitioners
