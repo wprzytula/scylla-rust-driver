@@ -1669,7 +1669,7 @@ async fn query_tables_schema(
             .remove(&keyspace_and_table_name)
             .unwrap_or_default();
 
-        // unwrap of get() result: all colum names in `partition_key` are at this
+        // unwrap of get() result: all column names in `partition_key` are at this
         // point guaranteed to be present in `columns`. See the construction of `partition_key`
         let pk_column_specs = partition_key
             .iter()
