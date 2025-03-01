@@ -1585,8 +1585,8 @@ async fn query_tables_schema(
             .entry((keyspace_name, table_name))
             .or_insert(Ok((
                 HashMap::new(), // columns
-                HashMap::new(), // partition key
-                HashMap::new(), // clustering key
+                Vec::new(),     // partition key
+                Vec::new(),     // clustering key
             )))
         else {
             // This table was previously marked as broken, no way to insert anything.
@@ -1594,12 +1594,12 @@ async fn query_tables_schema(
         };
 
         if kind == ColumnKind::PartitionKey || kind == ColumnKind::Clustering {
-            let key_map = if kind == ColumnKind::PartitionKey {
+            let key_list: &mut Vec<(i32, String)> = if kind == ColumnKind::PartitionKey {
                 entry.1.borrow_mut()
             } else {
                 entry.2.borrow_mut()
             };
-            key_map.insert(position, column_name.clone());
+            key_list.push((position, column_name.clone()));
         }
 
         entry.0.insert(
@@ -1621,7 +1621,12 @@ async fn query_tables_schema(
     'tables_loop: for ((keyspace_name, table_name), table_result) in tables_schema {
         let keyspace_and_table_name = (keyspace_name, table_name);
 
-        let (columns, mut partition_key_columns, mut clustering_key_columns) = match table_result {
+        #[allow(clippy::type_complexity)]
+        let (columns, partition_key_columns, clustering_key_columns): (
+            HashMap<String, Column>,
+            Vec<(i32, String)>,
+            Vec<(i32, String)>,
+        ) = match table_result {
             Ok(table) => table,
             Err(e) => {
                 let _ = result.insert(keyspace_and_table_name, Err(e));
@@ -1629,41 +1634,50 @@ async fn query_tables_schema(
             }
         };
 
-        let mut partition_key = Vec::with_capacity(partition_key_columns.len());
-        // unwrap: I don't see the point of handling the scenario of fetching over
-        // 2 * 10^9 columns.
-        for position in 0..partition_key_columns.len().try_into().unwrap() {
-            match partition_key_columns.remove(&position) {
-                Some(column_name) => partition_key.push(column_name),
-                None => {
-                    result.insert(
-                        keyspace_and_table_name,
-                        Err(SingleKeyspaceMetadataError::IncompletePartitionKey(
-                            position,
-                        )),
-                    );
-                    continue 'tables_loop;
-                }
-            }
+        fn validate_key_columns(mut key_columns: Vec<(i32, String)>) -> Result<Vec<String>, i32> {
+            key_columns.sort_unstable_by_key(|(position, _)| *position);
+
+            key_columns
+                .into_iter()
+                .enumerate()
+                .map(|(idx, (position, column_name))| {
+                    // unwrap: I don't see the point of handling the scenario of fetching over
+                    // 2 * 10^9 columns.
+                    let idx: i32 = idx.try_into().unwrap();
+                    if idx == position {
+                        Ok(column_name)
+                    } else {
+                        Err(idx)
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()
         }
 
-        let mut clustering_key = Vec::with_capacity(clustering_key_columns.len());
-        // unwrap: I don't see the point of handling the scenario of fetching over
-        // 2 * 10^9 columns.
-        for position in 0..clustering_key_columns.len().try_into().unwrap() {
-            match clustering_key_columns.remove(&position) {
-                Some(column_name) => clustering_key.push(column_name),
-                None => {
-                    result.insert(
-                        keyspace_and_table_name,
-                        Err(SingleKeyspaceMetadataError::IncompleteClusteringKey(
-                            position,
-                        )),
-                    );
-                    continue 'tables_loop;
-                }
+        let partition_key = match validate_key_columns(partition_key_columns) {
+            Ok(partition_key_columns) => partition_key_columns,
+            Err(position) => {
+                result.insert(
+                    keyspace_and_table_name,
+                    Err(SingleKeyspaceMetadataError::IncompletePartitionKey(
+                        position,
+                    )),
+                );
+                continue 'tables_loop;
             }
-        }
+        };
+
+        let clustering_key = match validate_key_columns(clustering_key_columns) {
+            Ok(clustering_key_columns) => clustering_key_columns,
+            Err(position) => {
+                result.insert(
+                    keyspace_and_table_name,
+                    Err(SingleKeyspaceMetadataError::IncompleteClusteringKey(
+                        position,
+                    )),
+                );
+                continue 'tables_loop;
+            }
+        };
 
         let partitioner = all_partitioners
             .remove(&keyspace_and_table_name)
