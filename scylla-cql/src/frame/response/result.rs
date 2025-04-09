@@ -319,7 +319,7 @@ impl<'a> ResultMetadata<'a> {
 /// of `ResultMetadata`:
 /// 1. owning it in a borrowed form, self-borrowed from the RESULT:Rows frame;
 /// 2. sharing ownership of metadata cached in PreparedStatement.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ResultMetadataHolder {
     SelfBorrowed(SelfBorrowedMetadataContainer),
     SharedCached(Arc<ResultMetadata<'static>>),
@@ -520,7 +520,7 @@ pub use self_borrowed_metadata::SelfBorrowedMetadataContainer;
 /// RESULT:Rows response, in partially serialized form.
 ///
 /// Paging state and metadata are deserialized, rows remain serialized.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DeserializedMetadataAndRawRows {
     metadata: ResultMetadataHolder,
     rows_count: usize,
