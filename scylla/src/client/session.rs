@@ -1306,8 +1306,12 @@ impl Session {
 
             let preparations = connections_iter.map(|c| async move {
                 let res = c.prepare_raw(statement_ref).await;
-                let res_ok = res.is_ok();
+                let id = res
+                    .as_ref()
+                    .map(|prepared| bytes::Bytes::clone(&prepared.prepared_response.id))
+                    .ok();
 
+                let res_ok = res.is_ok();
                 // Send all errors and just the first successfully prepared statement.
                 if res.is_err() || !sent_prepared_ref.load(std::sync::atomic::Ordering::Relaxed) {
                     let _ = tx_ref
@@ -1315,8 +1319,28 @@ impl Session {
                         .await;
                 }
                 sent_prepared_ref.fetch_or(res_ok, std::sync::atomic::Ordering::Relaxed);
+
+                id
             });
-            join_all(preparations).await;
+            let ids = join_all(preparations).await;
+
+            // Verify id equality.
+            let first_id = ids
+                .iter()
+                .map(Option::as_ref)
+                .find(|id| id.is_some())
+                .flatten();
+
+            if let Some(id) = first_id {
+                if let Some(different_id) = ids.iter().flatten().find(|other_id| id != other_id) {
+                    tracing::error!(
+                        "Got differing ids upon statement preparation: statement \"{}\", id1: {:?}, id2: {:?}",
+                        statement_ref.contents,
+                        id,
+                        different_id
+                    );
+                }
+            }
         }
 
         tokio::task::spawn(preparation_worker(
