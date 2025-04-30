@@ -357,7 +357,6 @@ impl PreparedStatement {
 
     pub(crate) fn extract_partition_key_and_calculate_token<'ps>(
         &'ps self,
-        partitioner_name: &'ps PartitionerName,
         serialized_values: &'ps SerializedValues,
     ) -> Result<Option<(PartitionKey<'ps>, Token)>, PartitionKeyError> {
         if !self.is_token_aware() {
@@ -365,7 +364,7 @@ impl PreparedStatement {
         }
 
         let partition_key = self.extract_partition_key(serialized_values)?;
-        let token = partition_key.calculate_token(partitioner_name)?;
+        let token = partition_key.calculate_token(&self.partitioner_name)?;
 
         Ok(Some((partition_key, token)))
     }
@@ -390,7 +389,7 @@ impl PreparedStatement {
         &self,
         values: &SerializedValues,
     ) -> Result<Option<Token>, PartitionKeyError> {
-        self.extract_partition_key_and_calculate_token(&self.partitioner_name, values)
+        self.extract_partition_key_and_calculate_token(values)
             .map(|opt| opt.map(|(_pk, token)| token))
     }
 
@@ -754,7 +753,7 @@ pub(crate) struct PartitionKey<'ps> {
 impl<'ps> PartitionKey<'ps> {
     const SMALLVEC_ON_STACK_SIZE: usize = 8;
 
-    fn new(
+    pub(super) fn new(
         prepared_metadata: &'ps PreparedMetadata,
         bound_values: &'ps SerializedValues,
     ) -> Result<Self, PartitionKeyExtractionError> {
