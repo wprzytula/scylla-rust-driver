@@ -5,6 +5,7 @@ use crate::frame::frame_errors::CustomTypeParseError;
 use crate::utils::parse::ParseResult;
 use crate::utils::parse::ParserState;
 use itertools::Either;
+use itertools::Itertools as _;
 use std::borrow::Cow;
 use std::char;
 use std::sync::Arc;
@@ -143,6 +144,22 @@ impl<'result> CustomTypeParser<'result> {
         })))
     }
 
+    fn get_n_type_parameters<const N: usize>(
+        &mut self,
+    ) -> Result<[Result<ColumnType<'result>, CustomTypeParseError>; N], CustomTypeParseError> {
+        let mut backup = Self {
+            parser: self.parser,
+        };
+
+        self.get_type_parameters()?
+            .collect_array::<N>()
+            .ok_or_else(|| {
+                // unwrap(): get_type_parameters() already worked above, so it will work here as well.
+                let actual_parameter_count = backup.get_type_parameters().unwrap().count();
+                CustomTypeParseError::InvalidParameterCount(N, actual_parameter_count)
+            })
+    }
+
     fn get_vector_parameters(
         &mut self,
     ) -> Result<(ColumnType<'result>, u16), CustomTypeParseError> {
@@ -241,15 +258,7 @@ impl<'result> CustomTypeParser<'result> {
 
         match name {
             "ListType" => {
-                let [element_type_result] = self
-                    .get_type_parameters()?
-                    .collect::<Vec<_>>()
-                    .try_into()
-                    .map_err(
-                        |v: Vec<Result<ColumnType<'result>, CustomTypeParseError>>| {
-                            CustomTypeParseError::InvalidParameterCount(v.len(), 1)
-                        },
-                    )?;
+                let [element_type_result] = self.get_n_type_parameters::<1>()?;
                 let element_type = element_type_result?;
                 Ok(ColumnType::Collection {
                     frozen: false,
@@ -257,15 +266,7 @@ impl<'result> CustomTypeParser<'result> {
                 })
             }
             "SetType" => {
-                let [element_type_result] = self
-                    .get_type_parameters()?
-                    .collect::<Vec<_>>()
-                    .try_into()
-                    .map_err(
-                        |v: Vec<Result<ColumnType<'result>, CustomTypeParseError>>| {
-                            CustomTypeParseError::InvalidParameterCount(v.len(), 1)
-                        },
-                    )?;
+                let [element_type_result] = self.get_n_type_parameters::<1>()?;
                 let element_type = element_type_result?;
                 Ok(ColumnType::Collection {
                     frozen: false,
@@ -273,15 +274,7 @@ impl<'result> CustomTypeParser<'result> {
                 })
             }
             "MapType" => {
-                let [key_type_result, value_type_result] = self
-                    .get_type_parameters()?
-                    .collect::<Vec<_>>()
-                    .try_into()
-                    .map_err(
-                        |v: Vec<Result<ColumnType<'result>, CustomTypeParseError>>| {
-                            CustomTypeParseError::InvalidParameterCount(v.len(), 2)
-                        },
-                    )?;
+                let [key_type_result, value_type_result] = self.get_n_type_parameters::<2>()?;
                 let key_type = key_type_result?;
                 let value_type = value_type_result?;
                 Ok(ColumnType::Collection {
