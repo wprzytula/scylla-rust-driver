@@ -862,7 +862,7 @@ impl Session {
         serialized_values: &SerializedValues,
     ) -> Result<QueryResult, ExecutionError> {
         let (result, paging_state) = self
-            .execute(
+            .execute_inner(
                 prepared,
                 serialized_values,
                 None,
@@ -1006,7 +1006,7 @@ impl Session {
         paging_state: PagingState,
     ) -> Result<(QueryResult, PagingStateResponse), ExecutionError> {
         let page_size = prepared.get_validated_page_size();
-        self.execute(
+        self.execute_inner(
             prepared,
             serialized_values,
             Some(page_size),
@@ -1959,7 +1959,7 @@ impl Session {
             (None, RequestPaging::Unpaged)
         };
 
-        self.execute(
+        self.execute_inner(
             prepared,
             serialized_values,
             page_size,
@@ -1979,7 +1979,7 @@ impl Session {
     /// that we need to require users to make a conscious decision to use paging or not. For that, we expose
     /// the aforementioned 3 methods clearly differing in naming and API, so that no unconscious choices about paging
     /// should be made.
-    async fn execute(
+    async fn execute_inner(
         &self,
         prepared: &PreparedStatement,
         serialized_values: &SerializedValues,
