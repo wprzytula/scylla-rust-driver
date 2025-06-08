@@ -665,9 +665,9 @@ impl PreparedStatement {
     /// This method will serialize the values and thus type erase them on return.
     pub fn bind(
         &self,
-        values: &impl SerializeRow,
+        values: impl SerializeRow,
     ) -> Result<BoundStatement<'_>, SerializationError> {
-        BoundStatement::new_borrowed(self, values)
+        BoundStatement::new_borrowed(self, &values)
     }
 
     /// Returns an owned value binder, which owns the underlying prepared statement
