@@ -211,8 +211,8 @@ impl PreparedStatement {
         &self,
         bound_values: &impl SerializeRow,
     ) -> Result<Bytes, PartitionKeyError> {
-        let serialized = self.serialize_values(bound_values)?;
-        let partition_key = self.extract_partition_key(&serialized)?;
+        let bound = self.bind(bound_values)?;
+        let partition_key = bound.extract_partition_key()?;
         let mut buf = BytesMut::new();
         let mut writer = |chunk: &[u8]| buf.extend_from_slice(chunk);
 
@@ -256,7 +256,8 @@ impl PreparedStatement {
         &self,
         values: &impl SerializeRow,
     ) -> Result<Option<Token>, PartitionKeyError> {
-        self.calculate_token_untyped(&self.serialize_values(values)?)
+        let bound = self.bind(values)?;
+        bound.calculate_token()
     }
 
     // A version of calculate_token which skips serialization and uses SerializedValues directly.
