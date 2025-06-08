@@ -677,8 +677,8 @@ impl PreparedStatement {
     /// Binds values with a prepared statement, consuming the statement.
     ///
     /// This method will serialize the values and thus type erase them on return.
-    pub fn bind(self, values: &impl SerializeRow) -> Result<BoundStatement, SerializationError> {
-        BoundStatement::new(self, values)
+    pub fn bind(self, values: impl SerializeRow) -> Result<BoundStatement, SerializationError> {
+        BoundStatement::new(self, &values)
     }
 
     /// Returns a value binder, which owns the underlying prepared statement
