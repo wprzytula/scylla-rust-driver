@@ -16,6 +16,7 @@ use std::time::Duration;
 use thiserror::Error;
 use uuid::Uuid;
 
+use super::bound::BoundStatement;
 use super::{PageSize, StatementConfig};
 use crate::client::execution_profile::ExecutionProfileHandle;
 use crate::errors::{BadQuery, ExecutionError};
@@ -646,6 +647,26 @@ impl PreparedStatement {
     /// Borrows the execution profile handle associated with this query.
     pub fn get_execution_profile_handle(&self) -> Option<&ExecutionProfileHandle> {
         self.config.execution_profile_handle.as_ref()
+    }
+
+    /// Binds values with a prepared statement, consuming the statement.
+    ///
+    /// This method will serialize the values and thus type erase them on return.
+    pub fn into_bind(
+        self,
+        values: &impl SerializeRow,
+    ) -> Result<BoundStatement<'static>, SerializationError> {
+        BoundStatement::new_owned(self, values)
+    }
+
+    /// Binds values with a prepared statement, borrowing the statement.
+    ///
+    /// This method will serialize the values and thus type erase them on return.
+    pub fn bind(
+        &self,
+        values: &impl SerializeRow,
+    ) -> Result<BoundStatement<'_>, SerializationError> {
+        BoundStatement::new_borrowed(self, values)
     }
 
     pub(crate) fn serialize_values(
