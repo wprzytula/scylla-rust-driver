@@ -483,7 +483,7 @@ impl PreparedStatement {
     /// Binds values with a prepared statement, consuming the statement.
     ///
     /// This method will serialize the values and thus type erase them on return.
-    pub fn bind_owned(
+    pub fn into_bind(
         self,
         values: &impl SerializeRow,
     ) -> Result<BoundStatement<'static>, SerializationError> {
@@ -493,7 +493,7 @@ impl PreparedStatement {
     /// Binds values with a prepared statement, borrowing the statement.
     ///
     /// This method will serialize the values and thus type erase them on return.
-    pub fn bind_borrowed(
+    pub fn bind(
         &self,
         values: &impl SerializeRow,
     ) -> Result<BoundStatement<'_>, SerializationError> {
@@ -504,7 +504,7 @@ impl PreparedStatement {
     /// and can bind values (arguments) to it.
     ///
     /// Binder serializes and thus type erases the values.
-    pub fn binder_owned(self) -> StatementBinder<'static> {
+    pub fn into_binder(self) -> StatementBinder<'static> {
         StatementBinder::new_owned(self)
     }
 
@@ -512,7 +512,7 @@ impl PreparedStatement {
     /// and can bind values (arguments) to it.
     ///
     /// Binder serializes and thus type erases the values.
-    pub fn binder_borrowed(&self) -> StatementBinder<'_> {
+    pub fn binder(&self) -> StatementBinder<'_> {
         StatementBinder::new_borrowed(self)
     }
 

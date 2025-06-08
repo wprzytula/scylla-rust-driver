@@ -21,7 +21,7 @@ async fn test_binders() {
     {
         // Correct case.
         {
-            let binder = prepared.binder_borrowed().appending_binder();
+            let binder = prepared.binder().appending_binder();
             let bound = binder.bind_next_value("local").unwrap().finish().unwrap();
             session
                 .execute_bound_unpaged(&bound)
@@ -33,7 +33,7 @@ async fn test_binders() {
 
         // Incorrect case: not enough values.
         {
-            let binder = prepared.binder_borrowed().appending_binder();
+            let binder = prepared.binder().appending_binder();
             let err = binder.finish().unwrap_err();
             assert_matches!(
                 err,
@@ -46,7 +46,7 @@ async fn test_binders() {
 
         // Incorrect case: too many values.
         {
-            let binder = prepared.binder_borrowed().appending_binder();
+            let binder = prepared.binder().appending_binder();
             let err = binder
                 .bind_next_value("local")
                 .unwrap()
@@ -60,7 +60,7 @@ async fn test_binders() {
 
         // Incorrect case: wrong type.
         {
-            let binder = prepared.binder_borrowed().appending_binder();
+            let binder = prepared.binder().appending_binder();
             let err = binder.bind_next_value(42).unwrap_err();
             assert_matches!(err, AppendingStatementBinderError::Serialization(_))
         }
@@ -69,7 +69,7 @@ async fn test_binders() {
         {
             let _bound = {
                 let prepared = prepared.clone();
-                let binder = prepared.binder_owned().appending_binder();
+                let binder = prepared.into_binder().appending_binder();
                 binder.bind_next_value("local").unwrap().finish().unwrap()
             };
         }
@@ -79,7 +79,7 @@ async fn test_binders() {
     {
         // Correct case.
         {
-            let binder = prepared.binder_borrowed().by_index_binder();
+            let binder = prepared.binder().by_index_binder();
             let bound = binder
                 .bind_value_by_index(0, &"local")
                 .unwrap()
@@ -95,7 +95,7 @@ async fn test_binders() {
 
         // Incorrect case: not enough values.
         {
-            let binder = prepared.binder_borrowed().by_index_binder();
+            let binder = prepared.binder().by_index_binder();
             let err = binder.finish().unwrap_err();
             assert_matches!(
                 err,
@@ -105,14 +105,14 @@ async fn test_binders() {
 
         // Incorrect case: index out of parameter bounds.
         {
-            let binder = prepared.binder_borrowed().by_index_binder();
+            let binder = prepared.binder().by_index_binder();
             let err = binder.bind_value_by_index(1, &"remote").unwrap_err();
             assert_matches!(err, ByIndexStatementBinderError::NoSuchIndex { idx: 1 })
         }
 
         // Incorrect case: value bound twice.
         {
-            let binder = prepared.binder_borrowed().by_index_binder();
+            let binder = prepared.binder().by_index_binder();
             let err = binder
                 .bind_value_by_index(0, &"local")
                 .unwrap()
@@ -123,7 +123,7 @@ async fn test_binders() {
 
         // Incorrect case: wrong type.
         {
-            let binder = prepared.binder_borrowed().by_index_binder();
+            let binder = prepared.binder().by_index_binder();
             let binder = binder
                 .bind_value_by_index(0, &42 as &dyn SerializeValue)
                 .unwrap();
@@ -135,7 +135,7 @@ async fn test_binders() {
         {
             let _bound = {
                 let prepared = prepared.clone();
-                let binder = prepared.binder_owned().by_index_binder();
+                let binder = prepared.into_binder().by_index_binder();
                 binder
                     .bind_value_by_index(0, &"local")
                     .unwrap()
@@ -149,7 +149,7 @@ async fn test_binders() {
     {
         // Correct case.
         {
-            let binder = prepared.binder_borrowed().by_name_binder();
+            let binder = prepared.binder().by_name_binder();
             let bound = binder
                 .bind_value_by_name("key", &"local")
                 .unwrap()
@@ -165,7 +165,7 @@ async fn test_binders() {
 
         // Incorrect case: not enough values.
         {
-            let binder = prepared.binder_borrowed().by_name_binder();
+            let binder = prepared.binder().by_name_binder();
             let err = binder.finish().unwrap_err();
             assert_matches!(
                 err,
@@ -175,7 +175,7 @@ async fn test_binders() {
 
         // Incorrect case: unknown parameter name.
         {
-            let binder = prepared.binder_borrowed().by_name_binder();
+            let binder = prepared.binder().by_name_binder();
             let err = binder.bind_value_by_name("value", &"remote").unwrap_err();
             assert_matches!(
                 err,
@@ -185,7 +185,7 @@ async fn test_binders() {
 
         // Incorrect case: value bound twice.
         {
-            let binder = prepared.binder_borrowed().by_name_binder();
+            let binder = prepared.binder().by_name_binder();
             let err = binder
                 .bind_value_by_name("key", &"local")
                 .unwrap()
@@ -196,7 +196,7 @@ async fn test_binders() {
 
         // Incorrect case: wrong type.
         {
-            let binder = prepared.binder_borrowed().by_name_binder();
+            let binder = prepared.binder().by_name_binder();
             let binder = binder
                 .bind_value_by_name("key", &42 as &dyn SerializeValue)
                 .unwrap();
@@ -208,7 +208,7 @@ async fn test_binders() {
         {
             let _bound = {
                 let prepared = prepared.clone();
-                let binder = prepared.binder_owned().by_name_binder();
+                let binder = prepared.into_binder().by_name_binder();
                 binder
                     .bind_value_by_name("key", &"local")
                     .unwrap()
