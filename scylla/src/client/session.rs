@@ -1556,7 +1556,9 @@ impl Session {
         &self,
         bound: &BoundStatement<'_>,
     ) -> Result<QueryResult, ExecutionError> {
-        let (result, paging_state) = self.execute(bound, None, PagingState::start()).await?;
+        let (result, paging_state) = self
+            .execute_inner(bound, None, PagingState::start())
+            .await?;
         if !paging_state.finished() {
             error!(
                 "Unpaged prepared query returned a non-empty paging state! This is a driver-side or server-side bug."
@@ -1574,7 +1576,8 @@ impl Session {
         paging_state: PagingState,
     ) -> Result<(QueryResult, PagingStateResponse), ExecutionError> {
         let page_size = bound.prepared.get_validated_page_size();
-        self.execute(bound, Some(page_size), paging_state).await
+        self.execute_inner(bound, Some(page_size), paging_state)
+            .await
     }
 
     /// Sends a prepared request to the database, optionally continuing from a saved point.
@@ -1587,7 +1590,7 @@ impl Session {
     /// that we need to require users to make a conscious decision to use paging or not. For that, we expose
     /// the aforementioned 3 methods clearly differing in naming and API, so that no unconscious choices about paging
     /// should be made.
-    async fn execute(
+    async fn execute_inner(
         &self,
         bound: &BoundStatement<'_>,
         page_size: Option<PageSize>,
