@@ -12,6 +12,7 @@ use std::time::Duration;
 use thiserror::Error;
 use uuid::Uuid;
 
+use super::bound::{BoundStatement, StatementBinder};
 use super::{PageSize, StatementConfig};
 use crate::client::execution_profile::ExecutionProfileHandle;
 use crate::errors::{BadQuery, ExecutionError};
@@ -477,6 +478,42 @@ impl PreparedStatement {
     /// Borrows the execution profile handle associated with this query.
     pub fn get_execution_profile_handle(&self) -> Option<&ExecutionProfileHandle> {
         self.config.execution_profile_handle.as_ref()
+    }
+
+    /// Binds values with a prepared statement, consuming the statement.
+    ///
+    /// This method will serialize the values and thus type erase them on return.
+    pub fn bind_owned(
+        self,
+        values: &impl SerializeRow,
+    ) -> Result<BoundStatement<'static>, SerializationError> {
+        BoundStatement::new_owned(self, values)
+    }
+
+    /// Binds values with a prepared statement, borrowing the statement.
+    ///
+    /// This method will serialize the values and thus type erase them on return.
+    pub fn bind_borrowed(
+        &self,
+        values: &impl SerializeRow,
+    ) -> Result<BoundStatement<'_>, SerializationError> {
+        BoundStatement::new_borrowed(self, values)
+    }
+
+    /// Returns an owned value binder, which owns the underlying prepared statement
+    /// and can bind values (arguments) to it.
+    ///
+    /// Binder serializes and thus type erases the values.
+    pub fn binder_owned(self) -> StatementBinder<'static> {
+        StatementBinder::new_owned(self)
+    }
+
+    /// Returns a borrowed value binder, which borrows the underlying prepared statement
+    /// and can bind values (arguments) to it.
+    ///
+    /// Binder serializes and thus type erases the values.
+    pub fn binder_borrowed(&self) -> StatementBinder<'_> {
+        StatementBinder::new_borrowed(self)
     }
 
     pub(crate) fn serialize_values(
