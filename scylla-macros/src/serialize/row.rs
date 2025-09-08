@@ -271,6 +271,7 @@ impl Generator for ColumnSortingGenerator<'_> {
         let nonflattened_types: Vec<_> = nonflattened.iter().map(|f| &f.typ).collect();
 
         let partial_struct: syn::ItemStruct = parse_quote! {
+            #[doc(hidden)]
             pub struct #partial_struct_name #partial_generics {
                 #(#nonflattened_fields: &#partial_lt #nonflattened_types,)*
                 #(#flattened_fields: <#flattened_types as #crate_path::SerializeRowByName>::Partial<#partial_lt>,)*
@@ -341,6 +342,7 @@ impl Generator for ColumnSortingGenerator<'_> {
         let (partial_impl_generics, partial_ty_generics, partial_where_clause) =
             partial_generics.split_for_impl();
         let partial_serialize: syn::ItemImpl = parse_quote! {
+            #[automatically_derived]
             impl #partial_impl_generics #crate_path::PartialSerializeRowByName for #partial_struct_name #partial_ty_generics #partial_where_clause {
                 fn serialize_field(
                     &mut self,
@@ -374,6 +376,7 @@ impl Generator for ColumnSortingGenerator<'_> {
         // 3. Implement SerializeRowByName
         let num_fields = flattened_visited_flag_names.len() + nonflattened_visited_flag_names.len();
         let serialize_by_name: syn::ItemImpl = parse_quote! {
+            #[automatically_derived]
             impl #impl_generics #crate_path::SerializeRowByName for #struct_name #ty_generics #where_clause {
                 type Partial<#partial_lt> = #partial_struct_name #partial_ty_generics where Self: #partial_lt;
 

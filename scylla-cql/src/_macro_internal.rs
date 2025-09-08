@@ -45,6 +45,7 @@ pub use crate::serialize::{CellValueBuilder, CellWriter, RowWriter, Serializatio
 - `{Self}` does not use `#[derive(SerializeRow)]`
 - `{Self}` uses `#[scylla(flavor = \"enforce_order\")]`"
 )]
+#[doc(hidden)]
 pub trait SerializeRowByName {
     /// A type that can handle serialization of this struct column-by-column
     type Partial<'d>: PartialSerializeRowByName
@@ -70,6 +71,7 @@ impl<T: SerializeRowByName + ?Sized> SerializeRowByName for &T {
 ///
 /// For now this trait is an implementation detail of `#[derive(SerializeRow)]` when
 /// serializing by name
+#[doc(hidden)]
 pub trait PartialSerializeRowByName {
     /// Tries to serialize a single column in the row according to the information in the given
     /// context.
@@ -97,6 +99,7 @@ pub trait PartialSerializeRowByName {
 - `{Self}` does not use `#[derive(SerializeRow)]`
 - `{Self}` uses `#[scylla(flavor = \"match_by_name\")]` (which is the default)"
 )]
+#[doc(hidden)]
 pub trait SerializeRowInOrder {
     fn serialize_in_order(
         &self,
