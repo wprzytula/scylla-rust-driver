@@ -1234,10 +1234,12 @@ impl UdtSerializer {
 // Do not remove. It's not used in tests but we keep it here to check that
 // we properly ignore warnings about unused variables, unnecessary `mut`s
 // etc. that usually pop up when generating code for empty structs.
+#[expect(unused)]
 #[derive(scylla_macros::DeserializeValue)]
 #[scylla(crate = crate)]
 struct TestUdtWithNoFieldsUnordered {}
 
+#[expect(unused)]
 #[derive(scylla_macros::DeserializeValue)]
 #[scylla(crate = crate, flavor = "enforce_order")]
 struct TestUdtWithNoFieldsOrdered {}

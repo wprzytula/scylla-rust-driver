@@ -186,6 +186,7 @@ macro_rules! test_crate {
         }
 
         // Test attributes for value struct with name flavor
+        #[expect(unused)]
         #[derive(
             _scylla::DeserializeValue, _scylla::SerializeValue, PartialEq, Debug,
         )]
@@ -204,6 +205,7 @@ macro_rules! test_crate {
         }
 
         // Test attributes for value struct with strict name flavor
+        #[expect(unused)]
         #[derive(
             _scylla::DeserializeValue, _scylla::SerializeValue, PartialEq, Debug,
         )]
@@ -222,6 +224,7 @@ macro_rules! test_crate {
         }
 
         // Test attributes for value struct with ordered flavor
+        #[expect(unused)]
         #[derive(
             _scylla::DeserializeValue, _scylla::SerializeValue, PartialEq, Debug,
         )]
@@ -240,6 +243,7 @@ macro_rules! test_crate {
         }
 
         // Test attributes for value struct with strict ordered flavor
+        #[expect(unused)]
         #[derive(
             _scylla::DeserializeValue, _scylla::SerializeValue, PartialEq, Debug,
         )]
@@ -258,6 +262,7 @@ macro_rules! test_crate {
         }
 
         // Test attributes for value struct with ordered flavor and skipped name checks
+        #[expect(unused)]
         #[derive(
             _scylla::DeserializeValue, _scylla::SerializeValue, PartialEq, Debug,
         )]
@@ -275,6 +280,7 @@ macro_rules! test_crate {
         }
 
         // Test attributes for value struct with strict ordered flavor and skipped name checks
+        #[expect(unused)]
         #[derive(
             _scylla::DeserializeValue, _scylla::SerializeValue, PartialEq, Debug,
         )]
@@ -292,6 +298,7 @@ macro_rules! test_crate {
         }
 
         // Test attributes for row struct with name flavor
+        #[expect(unused)]
         #[derive(
             _scylla::DeserializeRow, _scylla::SerializeRow, PartialEq, Debug,
         )]
@@ -307,6 +314,7 @@ macro_rules! test_crate {
         }
 
         // Test attributes for row struct with ordered flavor
+        #[expect(unused)]
         #[derive(
             _scylla::DeserializeRow, _scylla::SerializeRow, PartialEq, Debug,
         )]
@@ -322,6 +330,7 @@ macro_rules! test_crate {
         }
 
         // Test attributes for row struct with ordered flavor and skipped name checks
+        #[expect(unused)]
         #[derive(
             _scylla::DeserializeRow, _scylla::SerializeRow, PartialEq, Debug,
         )]
