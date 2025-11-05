@@ -143,5 +143,10 @@ path = "tls-rustls.rs"
 name = "execution_profile"
 path = "execution_profile.rs"
 
+[[example]]
+name = "new_execution_api"
+path = "new_execution_api.rs"
+
+
 [package.metadata.cargo-semver-checks.lints]
 workspace = true

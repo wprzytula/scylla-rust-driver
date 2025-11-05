@@ -2604,3 +2604,248 @@ enum SchemaNodeResult {
     Success(Uuid),
     BrokenConnection(BrokenConnectionError),
 }
+
+mod sealed {
+    // This is a sealed trait - its whole purpose is to be unnameable.
+    // This means we need to disable the check.
+    #[expect(unnameable_types)]
+    pub trait Sealed {}
+}
+
+pub trait Executable: sealed::Sealed {
+    async fn unpaged(self, session: &Session) -> Result<QueryResult, ExecutionError>;
+    async fn single_page(
+        self,
+        session: &Session,
+        paging_state: PagingState,
+    ) -> Result<(QueryResult, PagingStateResponse), ExecutionError>;
+    async fn iter(self, session: &Session) -> Result<QueryPager, PagerExecutionError>;
+}
+
+#[derive(Debug)]
+pub struct StatementExecutor<'session, Stmt> {
+    session: &'session Session,
+    statement: Stmt,
+}
+
+impl Session {
+    pub fn execute<Stmt: Executable>(&self, statement: Stmt) -> StatementExecutor<'_, Stmt> {
+        StatementExecutor {
+            statement,
+            session: self,
+        }
+    }
+}
+
+impl<Stmt: Executable> StatementExecutor<'_, Stmt> {
+    pub async fn unpaged(self) -> Result<QueryResult, ExecutionError> {
+        let Self { session, statement } = self;
+        statement.unpaged(session).await
+    }
+
+    pub async fn single_page(
+        self,
+        paging_state: PagingState,
+    ) -> Result<(QueryResult, PagingStateResponse), ExecutionError> {
+        let Self { session, statement } = self;
+        statement.single_page(session, paging_state).await
+    }
+
+    pub async fn iter(self) -> Result<QueryPager, PagerExecutionError> {
+        let Self { session, statement } = self;
+        statement.iter(session).await
+    }
+}
+
+/* IMPLEMENTATIONS */
+
+/* Unprepared statements */
+
+impl<Values: SerializeRow> sealed::Sealed for (Statement, Values) {}
+impl<Values: SerializeRow> Executable for (Statement, Values) {
+    async fn unpaged(self, session: &Session) -> Result<QueryResult, ExecutionError> {
+        let (statement, values) = self;
+        session.query_unpaged(statement, values).await
+    }
+
+    async fn single_page(
+        self,
+        session: &Session,
+        paging_state: PagingState,
+    ) -> Result<(QueryResult, PagingStateResponse), ExecutionError> {
+        let (statement, values) = self;
+        session
+            .query_single_page(statement, values, paging_state)
+            .await
+    }
+
+    async fn iter(self, session: &Session) -> Result<QueryPager, PagerExecutionError> {
+        let (statement, values) = self;
+        session.query_iter(statement, values).await
+    }
+}
+
+/* String / &str implementations simply forward to the Statement impl. */
+
+impl<Values: SerializeRow> sealed::Sealed for (String, Values) {}
+impl<Values: SerializeRow> Executable for (String, Values) {
+    async fn unpaged(self, session: &Session) -> Result<QueryResult, ExecutionError> {
+        let (statement, values) = self;
+        let statement = Statement::new(statement);
+        (statement, values).unpaged(session).await
+    }
+
+    async fn single_page(
+        self,
+        session: &Session,
+        paging_state: PagingState,
+    ) -> Result<(QueryResult, PagingStateResponse), ExecutionError> {
+        let (statement, values) = self;
+        let statement = Statement::new(statement);
+        (statement, values).single_page(session, paging_state).await
+    }
+
+    async fn iter(self, session: &Session) -> Result<QueryPager, PagerExecutionError> {
+        let (statement, values) = self;
+        let statement = Statement::new(statement);
+        (statement, values).iter(session).await
+    }
+}
+
+impl<Values: SerializeRow> sealed::Sealed for (&str, Values) {}
+impl<Values: SerializeRow> Executable for (&str, Values) {
+    async fn unpaged(self, session: &Session) -> Result<QueryResult, ExecutionError> {
+        let (statement, values) = self;
+        let statement = Statement::new(statement);
+        (statement, values).unpaged(session).await
+    }
+
+    async fn single_page(
+        self,
+        session: &Session,
+        paging_state: PagingState,
+    ) -> Result<(QueryResult, PagingStateResponse), ExecutionError> {
+        let (statement, values) = self;
+        let statement = Statement::new(statement);
+        (statement, values).single_page(session, paging_state).await
+    }
+
+    async fn iter(self, session: &Session) -> Result<QueryPager, PagerExecutionError> {
+        let (statement, values) = self;
+        let statement = Statement::new(statement);
+        (statement, values).iter(session).await
+    }
+}
+
+/* Prepared statements */
+impl<Values: SerializeRow> sealed::Sealed for (PreparedStatement, Values) {}
+impl<Values: SerializeRow> Executable for (PreparedStatement, Values) {
+    async fn unpaged(self, session: &Session) -> Result<QueryResult, ExecutionError> {
+        let (prepared, values) = self;
+        session.execute_unpaged(&prepared, values).await
+    }
+
+    async fn single_page(
+        self,
+        session: &Session,
+        paging_state: PagingState,
+    ) -> Result<(QueryResult, PagingStateResponse), ExecutionError> {
+        let (prepared, values) = self;
+        session
+            .execute_single_page(&prepared, values, paging_state)
+            .await
+    }
+
+    async fn iter(self, session: &Session) -> Result<QueryPager, PagerExecutionError> {
+        let (prepared, values) = self;
+        session.execute_iter(prepared, values).await
+    }
+}
+
+impl<Values: SerializeRow> sealed::Sealed for (&PreparedStatement, Values) {}
+impl<Values: SerializeRow> Executable for (&PreparedStatement, Values) {
+    async fn unpaged(self, session: &Session) -> Result<QueryResult, ExecutionError> {
+        let (prepared, values) = self;
+        session.execute_unpaged(prepared, values).await
+    }
+
+    async fn single_page(
+        self,
+        session: &Session,
+        paging_state: PagingState,
+    ) -> Result<(QueryResult, PagingStateResponse), ExecutionError> {
+        let (prepared, values) = self;
+        session
+            .execute_single_page(prepared, values, paging_state)
+            .await
+    }
+
+    async fn iter(self, session: &Session) -> Result<QueryPager, PagerExecutionError> {
+        let (prepared, values) = self;
+        session.execute_iter(prepared.clone(), values).await
+    }
+}
+
+/* Bound statements */
+impl sealed::Sealed for BoundStatement<'_> {}
+impl Executable for BoundStatement<'_> {
+    async fn unpaged(self, session: &Session) -> Result<QueryResult, ExecutionError> {
+        let bound = self;
+        session.execute_bound_unpaged(&bound).await
+    }
+
+    async fn single_page(
+        self,
+        session: &Session,
+        paging_state: PagingState,
+    ) -> Result<(QueryResult, PagingStateResponse), ExecutionError> {
+        let bound = self;
+        // session
+        //     .execute_bound_single_page(&bound, paging_state)
+        //     .await
+        todo!()
+    }
+
+    async fn iter(self, session: &Session) -> Result<QueryPager, PagerExecutionError> {
+        let bound = self;
+        // session.execute_bound_iter(bound).await
+        todo!()
+    }
+}
+
+impl sealed::Sealed for &BoundStatement<'_> {}
+impl Executable for &BoundStatement<'_> {
+    async fn unpaged(self, session: &Session) -> Result<QueryResult, ExecutionError> {
+        let bound = self;
+        session.execute_bound_unpaged(bound).await
+    }
+
+    async fn single_page(
+        self,
+        session: &Session,
+        paging_state: PagingState,
+    ) -> Result<(QueryResult, PagingStateResponse), ExecutionError> {
+        let bound = self;
+        // session
+        //     .execute_bound_single_page(bound, paging_state)
+        //     .await
+        todo!()
+    }
+
+    async fn iter(self, session: &Session) -> Result<QueryPager, PagerExecutionError> {
+        let bound = self;
+        // session.execute_bound_iter(bound.clone()).await
+        todo!()
+    }
+}
+
+// TODO: This is probably redundant and unusable. Batches will likely retain the old API
+// or have another API implemented for them (to account for BoundBatch).
+impl<Values: BatchValues> StatementExecutor<'_, (&Batch, Values)> {
+    pub async fn unpaged(self) -> Result<QueryResult, ExecutionError> {
+        // Implementation for running a batch statement
+        let StatementExecutor { session, statement } = self;
+        let (batch, values) = statement;
+        session.batch(batch, values).await
+    }
+}
