@@ -14,7 +14,7 @@ use std::time::Duration;
 use thiserror::Error;
 use uuid::Uuid;
 
-use super::bound::BoundStatement;
+use super::bound::{BoundStatement, StatementBinder};
 use super::{PageSize, StatementConfig};
 use crate::client::execution_profile::ExecutionProfileHandle;
 use crate::errors::{BadQuery, ExecutionError};
@@ -679,6 +679,14 @@ impl PreparedStatement {
     /// This method will serialize the values and thus type erase them on return.
     pub fn bind(self, values: &impl SerializeRow) -> Result<BoundStatement, SerializationError> {
         BoundStatement::new(self, values)
+    }
+
+    /// Returns a value binder, which owns the underlying prepared statement
+    /// and can bind values (arguments) one by one to it.
+    ///
+    /// Binder serializes and thus type erases the values.
+    pub fn into_binder(self) -> StatementBinder {
+        StatementBinder::new(self)
     }
 
     pub(crate) fn serialize_values(
