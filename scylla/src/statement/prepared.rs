@@ -16,7 +16,7 @@ use std::time::Duration;
 use thiserror::Error;
 use uuid::Uuid;
 
-use super::bound::BoundStatement;
+use super::bound::{BoundStatement, StatementBinder};
 use super::{PageSize, StatementConfig};
 use crate::client::execution_profile::ExecutionProfileHandle;
 use crate::errors::{BadQuery, ExecutionError};
@@ -668,6 +668,22 @@ impl PreparedStatement {
         values: &impl SerializeRow,
     ) -> Result<BoundStatement<'_>, SerializationError> {
         BoundStatement::new_borrowed(self, values)
+    }
+
+    /// Returns an owned value binder, which owns the underlying prepared statement
+    /// and can bind values (arguments) to it.
+    ///
+    /// Binder serializes and thus type erases the values.
+    pub fn into_binder(self) -> StatementBinder<'static> {
+        StatementBinder::new_owned(self)
+    }
+
+    /// Returns a borrowed value binder, which borrows the underlying prepared statement
+    /// and can bind values (arguments) to it.
+    ///
+    /// Binder serializes and thus type erases the values.
+    pub fn binder(&self) -> StatementBinder<'_> {
+        StatementBinder::new_borrowed(self)
     }
 
     pub(crate) fn serialize_values(
