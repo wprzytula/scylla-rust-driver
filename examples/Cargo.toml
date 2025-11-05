@@ -150,5 +150,10 @@ path = "tracing.rs"
 name = "user_defined_type"
 path = "user_defined_type.rs"
 
+[[example]]
+name = "new_execution_api"
+path = "new_execution_api.rs"
+
+
 [package.metadata.cargo-semver-checks.lints]
 workspace = true
