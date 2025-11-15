@@ -50,6 +50,73 @@ where
     pub values: Values,
 }
 
+#[non_exhaustive] // So that we can add more fields in the future without breaking changes.
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+pub struct BatchV2<'b> {
+    pub batch_type: BatchType,
+    pub statements_len: u16,
+    pub statements_and_values: Cow<'b, [u8]>,
+    pub consistency: types::Consistency,
+    pub serial_consistency: Option<types::SerialConsistency>,
+    pub timestamp: Option<i64>,
+}
+
+impl<'b> BatchV2<'b> {
+    pub fn new(
+        batch_type: BatchType,
+        statements_len: u16,
+        statements_and_values: Cow<'b, [u8]>,
+        consistency: types::Consistency,
+        serial_consistency: Option<types::SerialConsistency>,
+        timestamp: Option<i64>,
+    ) -> Self {
+        Self {
+            batch_type,
+            statements_len,
+            statements_and_values,
+            consistency,
+            serial_consistency,
+            timestamp,
+        }
+    }
+}
+
+impl SerializableRequest for BatchV2<'_> {
+    const OPCODE: RequestOpcode = RequestOpcode::Batch;
+
+    fn serialize(&self, buf: &mut Vec<u8>) -> Result<(), CqlRequestSerializationError> {
+        // Serializing type of batch
+        buf.put_u8(self.batch_type as u8);
+
+        // Serializing queries
+        types::write_short(self.statements_len, buf);
+        buf.extend_from_slice(&self.statements_and_values);
+
+        // Serializing consistency
+        types::write_consistency(self.consistency, buf);
+
+        // Serializing flags
+        let mut flags = 0;
+        if self.serial_consistency.is_some() {
+            flags |= FLAG_WITH_SERIAL_CONSISTENCY;
+        }
+        if self.timestamp.is_some() {
+            flags |= FLAG_WITH_DEFAULT_TIMESTAMP;
+        }
+
+        buf.put_u8(flags);
+
+        if let Some(serial_consistency) = self.serial_consistency {
+            types::write_serial_consistency(serial_consistency, buf);
+        }
+        if let Some(timestamp) = self.timestamp {
+            types::write_long(timestamp, buf);
+        }
+
+        Ok(())
+    }
+}
+
 /// The type of a batch.
 #[derive(Clone, Copy)]
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
