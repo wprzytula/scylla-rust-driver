@@ -4,9 +4,9 @@
 use std::{borrow::Cow, fmt::Debug};
 
 use scylla_cql::serialize::{
+    SerializationError,
     row::{SerializeRow, SerializedValues},
     value::SerializeValue,
-    SerializationError,
 };
 use thiserror::Error;
 
@@ -42,6 +42,13 @@ impl<'prepared> BoundStatement<'prepared> {
         let values = prepared.serialize_values(values)?;
         let prepared = Cow::Borrowed(prepared);
         Ok(Self { prepared, values })
+    }
+
+    pub(crate) fn new_untyped(
+        prepared: Cow<'prepared, PreparedStatement>,
+        values: SerializedValues,
+    ) -> Self {
+        Self { prepared, values }
     }
 
     /// Determines which values constitute the partition key and puts them in order.
@@ -354,7 +361,7 @@ impl<'prepared, 'value> ByNameStatementBinder<'prepared, 'value> {
             Some(_) => {
                 return Err(ByNameStatementBinderError::DuplicatedValue {
                     name: name.to_owned(),
-                })
+                });
             }
             None => *slot = Some(DynValue(value)),
         }

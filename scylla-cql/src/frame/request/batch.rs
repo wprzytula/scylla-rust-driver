@@ -312,7 +312,7 @@ impl BatchStatement<'_> {
 }
 
 impl BatchStatement<'_> {
-    fn serialize(&self, buf: &mut impl BufMut) -> Result<(), BatchStatementSerializationError> {
+    pub fn serialize(&self, buf: &mut impl BufMut) -> Result<(), BatchStatementSerializationError> {
         match self {
             Self::Query { text } => {
                 buf.put_u8(0);
