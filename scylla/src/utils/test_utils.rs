@@ -1,8 +1,5 @@
 use scylla_cql::frame::response::error::DbError;
 use tracing::{error, warn};
-use tracing_subscriber::Layer;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
 
 use crate::client::caching_session::CachingSession;
 use crate::client::session::Session;
@@ -133,13 +130,9 @@ pub(crate) async fn scylla_supports_tablets(session: &Session) -> bool {
 }
 
 pub(crate) fn setup_tracing() {
-    let testing_layer = tracing_subscriber::fmt::layer()
-        .with_test_writer()
-        .with_filter(tracing_subscriber::EnvFilter::from_default_env());
-    let noop_layer = tracing_subscriber::fmt::layer().with_writer(std::io::sink);
-    let _ = tracing_subscriber::registry()
-        .with(testing_layer)
-        .with(noop_layer)
+    let _ = tracing_subscriber::fmt::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_writer(tracing_subscriber::fmt::TestWriter::new())
         .try_init();
 }
 

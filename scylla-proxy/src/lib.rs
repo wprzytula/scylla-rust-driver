@@ -17,16 +17,8 @@ pub use proxy::get_exclusive_local_address;
 
 #[cfg(test)]
 pub(crate) fn setup_tracing() {
-    use tracing_subscriber::Layer;
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
-
-    let testing_layer = tracing_subscriber::fmt::layer()
-        .with_test_writer()
-        .with_filter(tracing_subscriber::EnvFilter::from_default_env());
-    let noop_layer = tracing_subscriber::fmt::layer().with_writer(std::io::sink);
-    let _ = tracing_subscriber::registry()
-        .with(testing_layer)
-        .with(noop_layer)
+    let _ = tracing_subscriber::fmt::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_writer(tracing_subscriber::fmt::TestWriter::new())
         .try_init();
 }
