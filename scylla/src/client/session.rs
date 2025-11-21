@@ -48,8 +48,7 @@ use crate::routing::ShardAwarePortRange;
 use crate::routing::partitioner::PartitionerName;
 use crate::serialize::batch::BatchValues;
 use crate::serialize::row::{SerializeRow, SerializedValues};
-use crate::statement::batch::batch_values;
-use crate::statement::batch::{Batch, BatchStatement};
+use crate::statement::batch::{Batch, BatchStatement, BoundBatch, batch_values};
 use crate::statement::bound::BoundStatement;
 use crate::statement::prepared::{PartitionKeyError, PreparedStatement};
 use crate::statement::unprepared::Statement;
@@ -2166,6 +2165,54 @@ impl Session {
         Ok(prepared_batch)
     }
 
+    async fn last_minute_prepare_batch<'b>(
+        &self,
+        init_batch: &'b Batch,
+        values: impl BatchValues,
+    ) -> Result<Cow<'b, Batch>, PrepareError> {
+        let mut to_prepare = HashSet::<&str>::new();
+
+        {
+            let mut values_iter = values.batch_values_iter();
+            for stmt in &init_batch.statements {
+                if let BatchStatement::Query(query) = stmt {
+                    if let Some(false) = values_iter.is_empty_next() {
+                        to_prepare.insert(&query.contents);
+                    }
+                } else {
+                    values_iter.skip_next();
+                }
+            }
+        }
+
+        if to_prepare.is_empty() {
+            return Ok(Cow::Borrowed(init_batch));
+        }
+
+        let mut prepared_queries = HashMap::<&str, PreparedStatement>::new();
+
+        for query in to_prepare {
+            let prepared = self.prepare(query).await?;
+            prepared_queries.insert(query, prepared);
+        }
+
+        let mut batch: Cow<Batch> = Cow::Owned(Batch::new_from(init_batch));
+        for stmt in &init_batch.statements {
+            match stmt {
+                BatchStatement::Query(query) => match prepared_queries.get(query.contents.as_str())
+                {
+                    Some(prepared) => batch.to_mut().append_statement(prepared.clone()),
+                    None => batch.to_mut().append_statement(query.clone()),
+                },
+                BatchStatement::PreparedStatement(prepared) => {
+                    batch.to_mut().append_statement(prepared.clone());
+                }
+            }
+        }
+
+        Ok(batch)
+    }
+
     /// Sends `USE <keyspace_name>` request on all connections.
     ///
     /// This allows to write `SELECT * FROM table` instead of `SELECT * FROM keyspace.table`.
@@ -2222,7 +2269,157 @@ impl Session {
         self.cluster.use_keyspace(verified_ks_name).await
     }
 
+    // TODO: document
+    pub async fn bound_batch(&self, batch: &BoundBatch) -> Result<QueryResult, ExecutionError> {
+        // Shard-awareness behavior for batch will be to pick shard based on first batch statement's shard
+        // If users batch statements by shard, they will be rewarded with full shard awareness
+        let execution_profile = batch
+            .get_execution_profile_handle()
+            .unwrap_or_else(|| self.get_default_execution_profile_handle())
+            .access();
+
+        let consistency = batch
+            .config
+            .consistency
+            .unwrap_or(execution_profile.consistency);
+
+        let serial_consistency = batch
+            .config
+            .serial_consistency
+            .unwrap_or(execution_profile.serial_consistency);
+
+        let (table, token) = batch
+            .first_prepared
+            .as_ref()
+            .and_then(|(ps, token)| ps.get_table_spec().map(|table| (table, *token)))
+            .unzip();
+
+        let statement_info = RoutingInfo {
+            consistency,
+            serial_consistency,
+            token,
+            table,
+            is_confirmed_lwt: false,
+        };
+
+        let span = RequestSpan::new_batch();
+
+        let (run_request_result, coordinator): (
+            RunRequestResult<NonErrorQueryResponse>,
+            Coordinator,
+        ) = self
+            .run_request(
+                statement_info,
+                &batch.config,
+                execution_profile,
+                |connection: Arc<Connection>,
+                 consistency: Consistency,
+                 execution_profile: &ExecutionProfileInner| {
+                    let serial_consistency = batch
+                        .config
+                        .serial_consistency
+                        .unwrap_or(execution_profile.serial_consistency);
+                    async move {
+                        connection
+                            .bound_batch_with_consistency(batch, consistency, serial_consistency)
+                            .await
+                            .and_then(QueryResponse::into_non_error_query_response)
+                    }
+                },
+                &span,
+            )
+            .instrument(span.span().clone())
+            .await?;
+
+        let result = match run_request_result {
+            RunRequestResult::IgnoredWriteError => QueryResult::mock_empty(coordinator),
+            RunRequestResult::Completed(non_error_query_response) => {
+                let result = non_error_query_response.into_query_result(coordinator)?;
+                span.record_result_fields(&result);
+                result
+            }
+        };
+
+        Ok(result)
+    }
+
+    // TODO: document
+    pub async fn bound_batch(&self, batch: &BoundBatch) -> Result<QueryResult, ExecutionError> {
+        // Shard-awareness behavior for batch will be to pick shard based on first batch statement's shard
+        // If users batch statements by shard, they will be rewarded with full shard awareness
+        let execution_profile = batch
+            .get_execution_profile_handle()
+            .unwrap_or_else(|| self.get_default_execution_profile_handle())
+            .access();
+
+        let consistency = batch
+            .config
+            .consistency
+            .unwrap_or(execution_profile.consistency);
+
+        let serial_consistency = batch
+            .config
+            .serial_consistency
+            .unwrap_or(execution_profile.serial_consistency);
+
+        let (table, token) = batch
+            .first_prepared
+            .as_ref()
+            .and_then(|(ps, token)| ps.get_table_spec().map(|table| (table, *token)))
+            .unzip();
+
+        let statement_info = RoutingInfo {
+            consistency,
+            serial_consistency,
+            token,
+            table,
+            is_confirmed_lwt: false,
+        };
+
+        let span = RequestSpan::new_batch();
+
+        let (run_request_result, coordinator): (
+            RunRequestResult<NonErrorQueryResponse>,
+            Coordinator,
+        ) = self
+            .run_request(
+                statement_info,
+                &batch.config,
+                execution_profile,
+                |connection: Arc<Connection>,
+                 consistency: Consistency,
+                 execution_profile: &ExecutionProfileInner| {
+                    let serial_consistency = batch
+                        .config
+                        .serial_consistency
+                        .unwrap_or(execution_profile.serial_consistency);
+                    async move {
+                        connection
+                            .bound_batch_with_consistency(batch, consistency, serial_consistency)
+                            .await
+                            .and_then(QueryResponse::into_non_error_query_response)
+                    }
+                },
+                &span,
+            )
+            .instrument(span.span().clone())
+            .await?;
+
+        let result = match run_request_result {
+            RunRequestResult::IgnoredWriteError => QueryResult::mock_empty(coordinator),
+            RunRequestResult::Completed(non_error_query_response) => {
+                let result = non_error_query_response.into_query_result(coordinator)?;
+                span.record_result_fields(&result);
+                result
+            }
+        };
+
+        Ok(result)
+    }
+
     /// Manually trigger a metadata refresh.
+    ///
+    /// The driver will fetch current nodes in the cluster and update its metadata
     ///
     /// The driver will fetch current nodes in the cluster and update its metadata.
     ///

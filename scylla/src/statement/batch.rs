@@ -2,19 +2,34 @@
 //! that can be executed together.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::Bytes;
+
 use crate::client::execution_profile::ExecutionProfileHandle;
+use crate::errors::{BadQuery, ExecutionError, RequestAttemptError};
+use crate::frame::frame_errors::{
+    BatchSerializationError, BatchStatementSerializationError, CqlRequestSerializationError,
+};
+use crate::frame::request;
+pub use crate::frame::request::batch::BatchType;
 use crate::observability::history::HistoryListener;
 use crate::policies::load_balancing::LoadBalancingPolicy;
 use crate::policies::retry::RetryPolicy;
-use crate::statement::prepared::PreparedStatement;
+use crate::routing::Token;
+use crate::serialize::SerializationError;
+use crate::serialize::batch::{BatchValues, BatchValuesIterator};
+use crate::serialize::row::{RowSerializationContext, SerializedValues};
+use crate::serialize::writers::RowWriter;
+use crate::statement::StatementConfig;
+use crate::statement::bound::BoundStatement;
+use crate::statement::prepared::{
+    PartitionKeyError, PartitionKeyExtractionError, PreparedStatement, TokenCalculationError,
+};
 use crate::statement::unprepared::Statement;
-
-use super::StatementConfig;
-use super::{Consistency, SerialConsistency};
-pub use crate::frame::request::batch::BatchType;
+use crate::statement::{Consistency, SerialConsistency};
 
 /// CQL batch statement.
 ///
@@ -224,6 +239,15 @@ impl Batch {
     pub fn get_execution_profile_handle(&self) -> Option<&ExecutionProfileHandle> {
         self.config.execution_profile_handle.as_ref()
     }
+
+    // TODO: documentation
+    pub async fn bind(
+        &self,
+        batch: &Batch,
+        values: impl BatchValues,
+    ) -> Result<BoundBatch, ExecutionError> {
+        BoundBatch::from_batch(batch, values)
+    }
 }
 
 impl Default for Batch {
@@ -422,5 +446,292 @@ pub(crate) mod batch_values {
         {
             self.rest.count()
         }
+    }
+}
+
+/// A batch with all of its statements prepared and bound to values.
+pub struct BoundBatch {
+    pub(crate) config: StatementConfig,
+    batch_type: BatchType,
+    pub(crate) buffer: Vec<u8>,
+    pub(crate) prepared: HashMap<Bytes, PreparedStatement>,
+    pub(crate) first_prepared: Option<(PreparedStatement, Token)>,
+    pub(crate) statements_len: u16,
+}
+
+impl<'prepared> FromIterator<BoundStatement<'prepared>>
+    for Result<BoundBatch, BatchSerializationError>
+{
+    fn from_iter<T: IntoIterator<Item = BoundStatement<'prepared>>>(into_iter: T) -> Self {
+        let mut iter = into_iter.into_iter();
+        iter.try_fold(
+            BoundBatch {
+                config: Default::default(),
+                batch_type: BatchType::Logged,
+                prepared: HashMap::new(),
+                buffer: vec![],
+                first_prepared: None,
+                statements_len: 0,
+            },
+            |mut bound_batch, bound_statement| {
+                bound_batch.append_bound_statement(bound_statement)?;
+                Ok(bound_batch)
+            },
+        )
+    }
+}
+
+impl BoundBatch {
+    pub fn append_bound_statement(
+        &mut self,
+        bound_statement: BoundStatement,
+    ) -> Result<(), BatchSerializationError> {
+        let statement_idx = self.statements_len as usize;
+
+        let token = bound_statement
+            .calculate_token()
+            .map_err(|e: PartitionKeyError| match e {
+                PartitionKeyError::TokenCalculation(TokenCalculationError::ValueTooLong(len)) => {
+                    todo!()
+                }
+                PartitionKeyError::PartitionKeyExtraction(
+                    PartitionKeyExtractionError::NoPkIndexValue(pk_index, values_len),
+                ) => todo!(),
+                PartitionKeyError::Serialization(e) => {
+                    BatchStatementSerializationError::ValuesSerialiation(e)
+                }
+            })
+            .map_err(|error| BatchSerializationError::StatementSerialization {
+                statement_idx,
+                error,
+            })?;
+
+        let prepared = bound_statement.prepared.into_owned();
+        let batch_stmt = BatchStatement::PreparedStatement(prepared);
+
+        // Possible mutations begin.
+
+        self.serialize_from_batch_statement(&batch_stmt, statement_idx, |row_writer| {
+            row_writer.append_serialize_row(&bound_statement.values);
+            Ok(Some(()))
+        })?;
+
+        // No more errors possible from here.
+
+        let prepared = match batch_stmt {
+            BatchStatement::PreparedStatement(ps) => ps,
+            _ => unreachable!(),
+        };
+
+        if self.first_prepared.is_none() {
+            if let Some(token) = token {
+                self.first_prepared = Some((prepared.clone(), token));
+            }
+        }
+
+        self.prepared
+            .insert(Bytes::clone(prepared.get_id()), prepared);
+        self.statements_len += 1;
+
+        Ok(())
+    }
+
+    pub(crate) fn from_batch(
+        batch: &Batch,
+        values: impl BatchValues,
+    ) -> Result<Self, ExecutionError> {
+        let mut bound_batch = BoundBatch {
+            config: batch.config.clone(),
+            batch_type: batch.batch_type,
+            prepared: HashMap::new(),
+            buffer: vec![],
+            first_prepared: None,
+            statements_len: batch.statements.len().try_into().map_err(|_| {
+                ExecutionError::BadQuery(BadQuery::TooManyQueriesInBatchStatement(
+                    batch.statements.len(),
+                ))
+            })?,
+        };
+
+        let mut values = values.batch_values_iter();
+        let mut statements = batch.statements.iter().enumerate();
+
+        if let Some((idx, statement)) = statements.next() {
+            match statement {
+                BatchStatement::Query(_) => {
+                    bound_batch
+                        .serialize_from_batch_statement(statement, idx, |writer| {
+                            let ctx = RowSerializationContext::empty();
+                            values.serialize_next(&ctx, writer).transpose()
+                        })
+                        .map_err(|e| {
+                            ExecutionError::LastAttemptError(
+                                RequestAttemptError::CqlRequestSerialization(
+                                    CqlRequestSerializationError::BatchSerialization(e),
+                                ),
+                            )
+                        })?;
+                }
+                BatchStatement::PreparedStatement(ps) => {
+                    let values = bound_batch
+                        .serialize_from_batch_statement(statement, idx, |writer| {
+                            let ctx =
+                                RowSerializationContext::from_prepared(ps.get_prepared_metadata());
+
+                            let values = SerializedValues::from_closure(|writer| {
+                                values.serialize_next(&ctx, writer).transpose()
+                            })
+                            .map(|(values, opt)| opt.map(|_| values));
+
+                            if let Ok(Some(values)) = &values {
+                                writer.append_serialize_row(values);
+                            }
+
+                            values
+                        })
+                        .map_err(|e| {
+                            ExecutionError::LastAttemptError(
+                                RequestAttemptError::CqlRequestSerialization(
+                                    CqlRequestSerializationError::BatchSerialization(e),
+                                ),
+                            )
+                        })?;
+
+                    let bound = BoundStatement::new_untyped(Cow::Borrowed(ps), values);
+                    let token = bound
+                        .calculate_token()
+                        .map_err(PartitionKeyError::into_execution_error)?;
+
+                    let prepared = bound.prepared.into_owned();
+                    bound_batch.first_prepared = token.map(|token| (prepared.clone(), token));
+                    bound_batch
+                        .prepared
+                        .insert(prepared.get_id().to_owned(), prepared);
+                }
+            }
+        }
+
+        for (idx, statement) in statements {
+            bound_batch
+                .serialize_from_batch_statement(statement, idx, |writer| {
+                    let ctx = match statement {
+                        BatchStatement::Query(_) => RowSerializationContext::empty(),
+                        BatchStatement::PreparedStatement(ps) => {
+                            RowSerializationContext::from_prepared(ps.get_prepared_metadata())
+                        }
+                    };
+                    values.serialize_next(&ctx, writer).transpose()
+                })
+                .map_err(|e| {
+                    ExecutionError::LastAttemptError(RequestAttemptError::CqlRequestSerialization(
+                        CqlRequestSerializationError::BatchSerialization(e),
+                    ))
+                })?;
+
+            if let BatchStatement::PreparedStatement(ps) = statement {
+                if !bound_batch.prepared.contains_key(ps.get_id()) {
+                    bound_batch
+                        .prepared
+                        .insert(ps.get_id().to_owned(), ps.clone());
+                }
+            }
+        }
+
+        // At this point, we have all statements serialized. If any values are still left, we have a mismatch.
+        if values.skip_next().is_some() {
+            return Err(ExecutionError::LastAttemptError(
+                RequestAttemptError::CqlRequestSerialization(
+                    CqlRequestSerializationError::BatchSerialization(counts_mismatch_err(
+                        bound_batch.statements_len as usize + 1 /*skipped above*/ + values.count(),
+                        bound_batch.statements_len,
+                    )),
+                ),
+            ));
+        }
+
+        Ok(bound_batch)
+    }
+
+    /// Borrows the execution profile handle associated with this batch.
+    pub(crate) fn get_execution_profile_handle(&self) -> Option<&ExecutionProfileHandle> {
+        self.config.execution_profile_handle.as_ref()
+    }
+
+    /// Gets the default timestamp for this batch in microseconds.
+    pub(crate) fn get_timestamp(&self) -> Option<i64> {
+        self.config.timestamp
+    }
+
+    /// Gets type of batch.
+    pub(crate) fn get_type(&self) -> BatchType {
+        self.batch_type
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn serialize_from_batch_statement<T>(
+        &mut self,
+        statement: &BatchStatement,
+        statement_idx: usize,
+        serialize: impl FnOnce(&mut RowWriter<'_>) -> Result<Option<T>, SerializationError>,
+    ) -> Result<T, BatchSerializationError> {
+        serialize_statement(
+            &request::batch::BatchStatement::from(statement),
+            &mut self.buffer,
+            serialize,
+        )
+        .map_err(|error| BatchSerializationError::StatementSerialization {
+            statement_idx,
+            error,
+        })
+        .transpose()
+        .unwrap_or_else(|| Err(counts_mismatch_err(statement_idx, self.statements_len)))
+    }
+}
+
+fn serialize_statement<T>(
+    statement: &request::batch::BatchStatement,
+    buffer: &mut Vec<u8>,
+    serialize: impl FnOnce(&mut RowWriter<'_>) -> Result<Option<T>, SerializationError>,
+) -> Result<Option<T>, BatchStatementSerializationError> {
+    let initial_len = buffer.len();
+
+    let res = (|| {
+        statement.serialize(buffer)?;
+
+        // Reserve two bytes for length.
+        let length_pos = buffer.len();
+        buffer.extend_from_slice(&[0, 0]);
+
+        // Serialize the values.
+        let mut writer = RowWriter::new(buffer);
+        let Some(res) =
+            serialize(&mut writer).map_err(BatchStatementSerializationError::ValuesSerialiation)?
+        else {
+            return Ok(None);
+        };
+
+        // Go back and put the length.
+        let count: u16 = writer
+            .value_count()
+            .try_into()
+            .map_err(|_| BatchStatementSerializationError::TooManyValues(writer.value_count()))?;
+
+        buffer[length_pos..length_pos + 2].copy_from_slice(&count.to_be_bytes());
+
+        Ok(Some(res))
+    })();
+
+    if res.is_err() {
+        // Rollback on error.
+        buffer.truncate(initial_len);
+    }
+
+    res
+}
+
+fn counts_mismatch_err(n_value_lists: usize, n_statements: u16) -> BatchSerializationError {
+    BatchSerializationError::ValuesAndStatementsLengthMismatch {
+        n_value_lists,
+        n_statements: n_statements as usize,
     }
 }

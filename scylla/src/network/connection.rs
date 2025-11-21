@@ -39,7 +39,7 @@ use crate::routing::{Shard, ShardAwarePortRange, ShardInfo, Sharder, ShardingErr
 use crate::serialize::batch::{BatchValues, BatchValuesIterator};
 use crate::serialize::raw_batch::RawBatchValuesAdapter;
 use crate::serialize::row::{RowSerializationContext, SerializedValues};
-use crate::statement::batch::{Batch, BatchStatement};
+use crate::statement::batch::{Batch, BatchStatement, BoundBatch};
 use crate::statement::prepared::{PreparedStatement, RawPreparedStatement};
 use crate::statement::unprepared::Statement;
 use crate::statement::{Consistency, PageSize};
@@ -47,7 +47,8 @@ use bytes::Bytes;
 use futures::{FutureExt, future::RemoteHandle};
 use socket2::{SockRef, TcpKeepalive};
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::HashSet;
+use std::collections::{BTreeSet, HashMap};
 use std::convert::TryFrom;
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroU64;
@@ -1332,6 +1333,59 @@ impl Connection {
         }
 
         Ok(batch)
+    }
+
+    pub(crate) async fn bound_batch_with_consistency(
+        &self,
+        batch: &BoundBatch,
+        consistency: Consistency,
+        serial_consistency: Option<SerialConsistency>,
+    ) -> Result<QueryResponse, RequestAttemptError> {
+        let get_timestamp_from_gen = || {
+            self.config
+                .timestamp_generator
+                .as_ref()
+                .map(|generator| generator.next_timestamp())
+        };
+        let timestamp = batch.get_timestamp().or_else(get_timestamp_from_gen);
+
+        let batch_frame = batch::BatchV2::new(
+            batch.get_type(),
+            batch.statements_len,
+            Cow::Borrowed(&batch.buffer),
+            consistency,
+            serial_consistency,
+            timestamp,
+        );
+
+        loop {
+            let query_response = self
+                .send_request(&batch_frame, true, batch.config.tracing, None)
+                .await
+                .map_err(RequestAttemptError::from)?;
+
+            return match query_response.response {
+                ResponseWithDeserializedMetadata::Error(err) => match err.error {
+                    DbError::Unprepared { statement_id } => {
+                        debug!(
+                            "Connection::batch: got DbError::Unprepared - repreparing statement with id {:?}",
+                            statement_id
+                        );
+                        if let Some(p) = batch.prepared.get(&statement_id) {
+                            self.reprepare(p.get_statement(), p).await?;
+                            continue;
+                        } else {
+                            return Err(RequestAttemptError::RepreparedIdMissingInBatch);
+                        }
+                    }
+                    _ => Err(err.into()),
+                },
+                ResponseWithDeserializedMetadata::Result(_) => Ok(query_response),
+                _ => Err(RequestAttemptError::UnexpectedResponse(
+                    query_response.response.to_response_kind(),
+                )),
+            };
+        }
     }
 
     pub(super) async fn use_keyspace(
