@@ -7,7 +7,6 @@ use crate::routing::locator::ReplicaLocator;
 use crate::routing::locator::tablets::{RawTablet, Tablet, TabletsInfo};
 use crate::routing::partitioner::{PartitionerName, calculate_token_for_partition_key};
 use crate::routing::{Shard, Token};
-use crate::utils::safe_format::IteratorSafeFormatExt;
 
 use itertools::Itertools;
 use scylla_cql::frame::response::result::TableSpec;
@@ -430,12 +429,7 @@ impl ClusterState {
                     debug!(
                         "Nodes ({}) that are replicas for a tablet {{ks: {}, table: {}, range: [{}. {}]}} not present in current ClusterState.known_peers. \
                        Skipping these replicas until topology refresh",
-                        f.iter().safe_format(", "),
-                        table.ks_name(),
-                        table.table_name(),
-                        t.range().0.value(),
-                        t.range().1.value()
-                    );
+                       f.iter().format(", "), table.ks_name(), table.table_name(), t.range().0.value(), t.range().1.value());
                     t
                 }
             };

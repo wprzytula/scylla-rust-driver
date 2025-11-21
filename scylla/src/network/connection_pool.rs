@@ -14,10 +14,10 @@ use crate::cluster::metadata::{PeerEndpoint, UntranslatedEndpoint};
 use crate::observability::metrics::Metrics;
 
 use crate::cluster::NodeAddr;
-use crate::utils::safe_format::IteratorSafeFormatExt;
 
 use arc_swap::ArcSwap;
-use futures::{Future, FutureExt, StreamExt, future::RemoteHandle, stream::FuturesUnordered};
+use futures::{future::RemoteHandle, stream::FuturesUnordered, Future, FutureExt, StreamExt};
+use itertools::Itertools;
 use rand::Rng;
 use std::convert::TryInto;
 use std::num::NonZeroUsize;
@@ -397,9 +397,7 @@ impl NodeConnectionPool {
     fn choose_random_connection_from_slice(v: &[Arc<Connection>]) -> Option<Arc<Connection>> {
         trace!(
             connections = tracing::field::display(
-                v.iter()
-                    .map(|conn| conn.get_connect_address())
-                    .safe_format(", ")
+                v.iter().map(|conn| conn.get_connect_address()).format(", ")
             ),
             "Available"
         );

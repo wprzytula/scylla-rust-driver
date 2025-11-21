@@ -15,7 +15,6 @@ use crate::deserialize::value::{
 };
 use crate::frame::response::result::{CollectionType, ColumnType};
 use crate::frame::types;
-use crate::utils::safe_format::IteratorSafeFormatExt;
 
 /// Error type indicating that the value is too large to fit in the destination type.
 ///
@@ -1230,6 +1229,7 @@ impl std::fmt::Display for CqlValue {
         use crate::pretty::{
             CqlStringLiteralDisplayer, HexBytes, MaybeNullDisplayer, PairDisplayer,
         };
+        use itertools::Itertools;
 
         match self {
             // Scalar types
@@ -1291,25 +1291,25 @@ impl std::fmt::Display for CqlValue {
                 f.write_str("(")?;
                 t.iter()
                     .map(|x| MaybeNullDisplayer(x.as_ref()))
-                    .safe_format(",")
+                    .format(",")
                     .fmt(f)?;
                 f.write_str(")")?;
             }
             CqlValue::List(v) | CqlValue::Vector(v) => {
                 f.write_str("[")?;
-                v.iter().safe_format(",").fmt(f)?;
+                v.iter().format(",").fmt(f)?;
                 f.write_str("]")?;
             }
             CqlValue::Set(v) => {
                 f.write_str("{")?;
-                v.iter().safe_format(",").fmt(f)?;
+                v.iter().format(",").fmt(f)?;
                 f.write_str("}")?;
             }
             CqlValue::Map(m) => {
                 f.write_str("{")?;
                 m.iter()
                     .map(|(k, v)| PairDisplayer(k, v))
-                    .safe_format(",")
+                    .format(",")
                     .fmt(f)?;
                 f.write_str("}")?;
             }
@@ -1322,7 +1322,7 @@ impl std::fmt::Display for CqlValue {
                 fields
                     .iter()
                     .map(|(k, v)| PairDisplayer(k, MaybeNullDisplayer(v.as_ref())))
-                    .safe_format(",")
+                    .format(",")
                     .fmt(f)?;
                 f.write_str("}")?;
             }

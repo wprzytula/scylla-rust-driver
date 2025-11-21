@@ -30,12 +30,12 @@ use crate::observability::metrics::Metrics;
 use crate::policies::host_filter::HostFilter;
 use crate::routing::Token;
 use crate::statement::unprepared::Statement;
-use crate::utils::safe_format::IteratorSafeFormatExt;
 use scylla_cql::utils::parse::{ParseErrorCause, ParseResult, ParserState};
 
 use futures::Stream;
 use futures::future::{self, FutureExt};
 use futures::stream::{self, StreamExt, TryStreamExt};
+use itertools::Itertools;
 use rand::seq::{IndexedRandom, SliceRandom};
 use rand::{Rng, rng};
 use scylla_cql::frame::response::result::{ColumnSpec, TableSpec};
@@ -564,10 +564,7 @@ impl MetadataReader {
 
         // shuffle known_peers to iterate through them in random order later
         self.known_peers.shuffle(&mut rng());
-        debug!(
-            "Known peers: {:?}",
-            self.known_peers.iter().safe_format(", ")
-        );
+        debug!("Known peers: {:?}", self.known_peers.iter().format(", "));
 
         let address_of_failed_control_connection = self.control_connection_endpoint.address();
         let filtered_known_peers = self
@@ -708,11 +705,7 @@ impl MetadataReader {
         if !metadata.peers.is_empty() && self.known_peers.is_empty() {
             error!(
                 node_ips = tracing::field::display(
-                    metadata
-                        .peers
-                        .iter()
-                        .map(|peer| peer.address)
-                        .safe_format(", ")
+                    metadata.peers.iter().map(|peer| peer.address).format(", ")
                 ),
                 "The host filter rejected all nodes in the cluster, \
                 no connections that can serve user queries have been \
@@ -734,7 +727,7 @@ impl MetadataReader {
                         .iter()
                         .filter(|peer| self.host_filter.as_ref().is_none_or(|p| p.accept(peer)))
                         .map(|peer| peer.address)
-                        .safe_format(", ")
+                        .format(", ")
                     ),
                     control_connection_address = ?self.control_connection_endpoint.address(),
                     "The node that the control connection is established to \

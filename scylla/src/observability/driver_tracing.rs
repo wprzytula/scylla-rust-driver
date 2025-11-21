@@ -2,8 +2,7 @@ use crate::cluster::node::Node;
 use crate::network::Connection;
 use crate::response::query_result::QueryResult;
 use crate::routing::{Shard, Token};
-use crate::utils::safe_format::IteratorSafeFormatExt;
-use itertools::Either;
+use itertools::{Either, Itertools};
 use scylla_cql::frame::response::result::{ColumnSpec, DeserializedMetadataAndRawRows};
 use scylla_cql::value::deser_cql_value;
 use std::borrow::Borrow;
@@ -137,7 +136,7 @@ impl RequestSpan {
             tracing::field::display(
                 replicas
                     .map(|(node, shard)| Replica(node, shard))
-                    .safe_format(", "),
+                    .format(", "),
             ),
         );
     }
@@ -181,5 +180,5 @@ fn partition_key_displayer<
         Ok(c) => Either::Left(c),
         Err(_) => Either::Right("<decoding error>"),
     })
-    .safe_format(", ")
+    .format(", ")
 }
