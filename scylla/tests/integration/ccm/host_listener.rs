@@ -627,3 +627,30 @@ async fn test_host_listener_with_host_filter() {
 // 2. Node is removed, then another node is added with the same IP.
 // 3. Driver connects when some nodes are down. Are they marked as UP optimistically,
 //    before any connection attempt succeeds or fails?
+
+#[tokio::test]
+#[cfg_attr(not(ccm_tests), ignore)]
+async fn test_host_listener_reproducer() {
+    setup_tracing();
+
+    async fn test(cluster: &mut Cluster) {
+        let listener = Arc::new(LoggingListener::default());
+        let session_builder = cluster.make_session_builder().await;
+        let mut config = session_builder.config;
+        config.host_listener = Some(Arc::clone(&listener) as Arc<dyn HostListener>);
+
+        {
+            let session = Session::connect(config).await.unwrap();
+            check_session_works_and_fully_connected(cluster.nodes().len(), &session).await;
+
+            info!("Removing node1");
+            decommission_remove(cluster, 1).await;
+
+            info!("Removing node2");
+            decommission_remove(cluster, 2).await;
+        }
+        // Session has been dropped. No new events should be logged now.
+    }
+
+    run_ccm_events_test(async |c| c, test).await;
+}
