@@ -137,6 +137,10 @@ pub enum PagerExecutionError {
     /// Failed to fetch the first page of the result.
     #[error("Failed to fetch the first page of the result: {0}")]
     NextPageError(#[from] NextPageError),
+
+    /// Failed to await automatic schema agreement.
+    #[error("Failed to await schema agreement: {0}")]
+    SchemaAgreementError(#[from] SchemaAgreementError),
 }
 
 /// Error that occurred during session creation
