@@ -292,6 +292,36 @@ async fn test_schema_await_with_pager_apis() {
             let host_ids = calculate_proxy_host_ids(&proxy_uris, &translation_map, &session);
 
             {
+                // Case 0: Smoke test that Pager API auto awaits schema agreement.
+                let kss = (0..10).map(|_| unique_keyspace_name()).collect::<Vec<_>>();
+                for ks in kss.iter() {
+                    let request = Statement::new(format!(
+                        "CREATE KEYSPACE {ks} WITH REPLICATION = {{'class' : 'NetworkTopologyStrategy', 'replication_factor' : 1}}"
+                    ));
+                    let result = session.query_iter(request, ()).await;
+                    assert_matches!(
+                        result,
+                        Ok(_)
+                    );
+
+                    session
+                        .query_iter(format!("DROP KEYSPACE {ks}"), &[])
+                        .await
+                        .unwrap();
+                }
+
+                assert_matches!(session.check_schema_agreement().await, Ok(Some(_)));
+
+                // Cleanup
+                session.await_schema_agreement().await.unwrap();
+                for ks in kss.iter() {
+                    let _ = session
+                    .query_unpaged(format!("DROP KEYSPACE {ks}"), &[])
+                    .await;
+                }
+            }
+
+            {
                 // Case 1: Paused node is a coordinator for DDL.
                 // DDL needs to fail.
                 let result = run_some_ddl_with_unreachable_node::<PagerQueryIterAPI>(
