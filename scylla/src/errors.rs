@@ -138,6 +138,10 @@ pub enum PagerExecutionError {
     #[error("Failed to fetch the first page of the result: {0}")]
     NextPageError(#[from] NextPageError),
 
+    /// 'USE KEYSPACE <>' request failed.
+    #[error("'USE KEYSPACE <>' request failed: {0}")]
+    UseKeyspaceError(#[from] UseKeyspaceError),
+
     /// Failed to await automatic schema agreement.
     #[error("Failed to await schema agreement: {0}")]
     SchemaAgreementError(#[from] SchemaAgreementError),

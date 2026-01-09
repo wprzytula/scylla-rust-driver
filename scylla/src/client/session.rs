@@ -1298,6 +1298,7 @@ impl Session {
             .access();
 
         QueryPager::new_for_query(
+            self,
             statement,
             execution_profile,
             self.cluster.get_state(),
@@ -1619,14 +1620,17 @@ impl Session {
             .unwrap_or_else(|| self.get_default_execution_profile_handle())
             .access();
 
-        QueryPager::new_for_prepared_statement(PreparedPagerConfig {
-            prepared,
-            values,
-            execution_profile,
-            cluster_state: self.cluster.get_state(),
-            #[cfg(feature = "metrics")]
-            metrics: Arc::clone(&self.metrics),
-        })
+        QueryPager::new_for_prepared_statement(
+            self,
+            PreparedPagerConfig {
+                prepared,
+                values,
+                execution_profile,
+                cluster_state: self.cluster.get_state(),
+                #[cfg(feature = "metrics")]
+                metrics: Arc::clone(&self.metrics),
+            },
+        )
         .await
     }
 
