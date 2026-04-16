@@ -38,6 +38,47 @@ type ConnectionCloseSignaler = tokio::sync::broadcast::Sender<()>;
 type ErrorPropagator = mpsc::UnboundedSender<ProxyError>;
 type ErrorSink = mpsc::UnboundedReceiver<ProxyError>;
 
+/// Tracks the number of active driver connections to a proxy node.
+///
+/// Shared between the [`Doorkeeper`] (which increments on accept) and
+/// [`RunningNode`] (which exposes [`RunningNode::wait_for_connection`]).
+/// Each accepted connection gets an [`Arc<ConnectionLifetime>`] guard that
+/// decrements the count when the last worker for that connection exits.
+struct ConnectionTracker {
+    active_count: std::sync::atomic::AtomicUsize,
+    notify: tokio::sync::Notify,
+}
+
+impl ConnectionTracker {
+    /// Track a new connection.
+    ///
+    /// Increments active count and creates a per-connection lifetime guard.
+    /// When the guard ([ConnectionLifetime]) is Drop'ed,
+    /// the active count is decremented.
+    fn register_connection(self: &Arc<Self>) -> Arc<ConnectionLifetime> {
+        self.active_count.fetch_add(1, Ordering::Relaxed);
+        self.notify.notify_waiters();
+        Arc::new(ConnectionLifetime {
+            tracker: Arc::clone(self),
+        })
+    }
+}
+
+/// Per-connection guard that decrements the active connection count on drop.
+///
+/// Wrapped in [`Arc`] and cloned to each worker task spawned for a connection.
+/// When the last worker finishes and drops its clone, the inner value drops
+/// and the active count is decremented.
+struct ConnectionLifetime {
+    tracker: Arc<ConnectionTracker>,
+}
+
+impl Drop for ConnectionLifetime {
+    fn drop(&mut self) {
+        self.tracker.active_count.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 static HARDCODED_OPTIONS_PARAMS: FrameParams = FrameParams {
     flags: 0,
     version: 0x04,
@@ -346,6 +387,10 @@ impl Proxy {
             .nodes
             .into_iter()
             .map(|node| {
+                let connection_tracker = Arc::new(ConnectionTracker {
+                    active_count: std::sync::atomic::AtomicUsize::new(0),
+                    notify: tokio::sync::Notify::new(),
+                });
                 let running = {
                     let (request_rules, response_rules) = match node {
                         InternalNode::Real {
@@ -360,6 +405,7 @@ impl Proxy {
                     RunningNode {
                         request_rules: request_rules.clone(),
                         response_rules: response_rules.cloned(),
+                        connection_tracker: connection_tracker.clone(),
                     }
                 };
                 (
@@ -368,6 +414,7 @@ impl Proxy {
                         terminate_signaler.clone(),
                         finish_guard.clone(),
                         error_propagator.clone(),
+                        connection_tracker,
                     ),
                     running,
                 )
@@ -391,6 +438,7 @@ impl Proxy {
 pub struct RunningNode {
     request_rules: Arc<Mutex<Vec<RequestRule>>>,
     response_rules: Option<Arc<Mutex<Vec<ResponseRule>>>>,
+    connection_tracker: Arc<ConnectionTracker>,
 }
 
 impl RunningNode {
@@ -443,6 +491,24 @@ impl RunningNode {
         let mut new_rules = rules;
         new_rules.append(&mut *old_rules_guard);
         *old_rules_guard = new_rules;
+    }
+
+    /// Waits until at least one driver connection is active on this node.
+    ///
+    /// Returns immediately if there is already an active connection.
+    /// Otherwise blocks until a new connection is accepted by the
+    /// node's doorkeeper.
+    pub async fn wait_for_connection(&self) {
+        loop {
+            // Prepare the notification future BEFORE checking the count
+            // to avoid a race where a connection arrives between the check
+            // and the await.
+            let notified = self.connection_tracker.notify.notified();
+            if self.connection_tracker.active_count.load(Ordering::Relaxed) > 0 {
+                return;
+            }
+            notified.await;
+        }
     }
 }
 
@@ -514,6 +580,22 @@ impl RunningProxy {
             }
         }
     }
+
+    /// Waits until at least one driver connection is active on any node
+    /// in this proxy.
+    ///
+    /// For single-node proxies (typical in client-routes tests), this waits
+    /// until a driver has connected to the sole node. For multi-node
+    /// proxies, returns as soon as any node receives a connection.
+    pub async fn wait_for_connection(&self) {
+        // Build a future for each node and race them.
+        futures::future::select_all(
+            self.running_nodes
+                .iter()
+                .map(|n| Box::pin(n.wait_for_connection())),
+        )
+        .await;
+    }
 }
 
 /// A worker corresponding to a particular node. It listens in a loop for driver's connections
@@ -527,6 +609,7 @@ struct Doorkeeper {
     finish_guard: FinishGuard,
     shards_count: Option<u16>,
     error_propagator: ErrorPropagator,
+    connection_tracker: Arc<ConnectionTracker>,
 }
 
 impl Doorkeeper {
@@ -535,6 +618,7 @@ impl Doorkeeper {
         terminate_signaler: TerminateSignaler,
         finish_guard: FinishGuard,
         error_propagator: ErrorPropagator,
+        connection_tracker: Arc<ConnectionTracker>,
     ) -> Result<(), DoorkeeperError> {
         let listener = TcpListener::bind(node.proxy_addr())
             .await
@@ -570,6 +654,7 @@ impl Doorkeeper {
             terminate_signaler,
             finish_guard,
             error_propagator,
+            connection_tracker,
         };
         tokio::task::spawn(doorkeeper.run());
         Ok(())
@@ -651,6 +736,13 @@ impl Doorkeeper {
         cluster_stream: Option<TcpStream>,
         shard: Option<TargetShard>,
     ) {
+        // Track a new connection: increment active count and create a
+        // per-connection lifetime guard. The guard is wrapped in Arc and
+        // cloned to each spawned worker task. When the last worker for this
+        // connection exits, the Arc's inner ConnectionLifetime drops and
+        // decrements the active count.
+        let conn_lifetime = self.connection_tracker.register_connection();
+
         let (driver_read, driver_write) = driver_stream.into_split();
 
         let new_worker = || ProxyWorker {
@@ -679,8 +771,10 @@ impl Doorkeeper {
         ) = compression::make_compression_infra();
 
         {
+            let guard = Arc::clone(&conn_lifetime);
             let worker = new_worker();
             tokio::task::spawn(async move {
+                let _conn = guard;
                 worker
                     .receiver_from_driver(
                         driver_read,
@@ -691,10 +785,12 @@ impl Doorkeeper {
             });
         }
         {
+            let guard = Arc::clone(&conn_lifetime);
             let worker = new_worker();
             let conn_close_sub = connection_close_tx.subscribe();
             let term_sub = self.terminate_signaler.subscribe();
             tokio::task::spawn(async move {
+                let _conn = guard;
                 worker
                     .sender_to_driver(
                         driver_write,
@@ -707,6 +803,7 @@ impl Doorkeeper {
             });
         }
         {
+            let guard = Arc::clone(&conn_lifetime);
             let worker = new_worker();
             let request_rules = self.node.request_rules().clone();
             let conn_close = connection_close_tx.clone();
@@ -714,6 +811,7 @@ impl Doorkeeper {
             let tx_driver_clone = tx_driver.clone();
             let tx_cluster_clone = tx_cluster.clone();
             tokio::task::spawn(async move {
+                let _conn = guard;
                 worker
                     .request_processor(
                         rx_request,
@@ -734,10 +832,12 @@ impl Doorkeeper {
         {
             let (cluster_read, cluster_write) = cluster_stream.unwrap().into_split();
             {
+                let guard = Arc::clone(&conn_lifetime);
                 let worker = new_worker();
                 let conn_close_sub = connection_close_tx.subscribe();
                 let term_sub = self.terminate_signaler.subscribe();
                 tokio::task::spawn(async move {
+                    let _conn = guard;
                     worker
                         .sender_to_cluster(
                             cluster_write,
@@ -750,8 +850,10 @@ impl Doorkeeper {
                 });
             }
             {
+                let guard = Arc::clone(&conn_lifetime);
                 let worker = new_worker();
                 tokio::task::spawn(async move {
+                    let _conn = guard;
                     worker
                         .receiver_from_cluster(
                             cluster_read,
@@ -762,11 +864,13 @@ impl Doorkeeper {
                 });
             }
             {
+                let guard = conn_lifetime;
                 let worker = new_worker();
                 let response_rules = response_rules.clone();
                 let conn_close = connection_close_tx.clone();
                 let event_flag = Arc::clone(&event_register_flag);
                 tokio::task::spawn(async move {
+                    let _conn = guard;
                     worker
                         .response_processor(
                             rx_response,
