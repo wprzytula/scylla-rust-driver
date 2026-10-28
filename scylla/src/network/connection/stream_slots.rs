@@ -77,8 +77,19 @@ impl StreamSlots {
         }
     }
 
+    /// Allocates a stream id for `request`, and sends `request` with it.
+    /// Returns `None` if all stream ids are in use. Otherwise, returns the
+    /// future of the response, see `AllocatedStream::submit`.
+    pub(super) fn submit(
+        &self,
+        permit: mpsc::Permit<'_, SerializedRequest>,
+        request: SerializedRequest,
+    ) -> Option<impl Future<Output = Result<TaskResponse, BrokenConnectionError>> + use<'_>> {
+        Some(self.allocate()?.submit(permit, request))
+    }
+
     /// Allocates a stream id for a request, or returns `None` if all are in use.
-    pub(super) fn allocate(&self) -> Option<AllocatedStream<'_>> {
+    fn allocate(&self) -> Option<AllocatedStream<'_>> {
         for (block_index, block) in self.used.iter().enumerate() {
             let mut used = block.load(atomic::Ordering::Relaxed);
             while used != u64::MAX {
@@ -191,7 +202,7 @@ impl StreamSlots {
 /// A stream id allocated for a request that is not sent yet.
 ///
 /// Dropping it releases the stream id.
-pub(super) struct AllocatedStream<'a> {
+struct AllocatedStream<'a> {
     streams: &'a StreamSlots,
     id: i16,
 }
@@ -204,7 +215,7 @@ impl<'a> AllocatedStream<'a> {
     /// is cancelled) marks the stream id as orphaned if the response may still
     /// arrive, or releases it.
     // Not an async fn, so that the request is sent before the first poll.
-    pub(super) fn submit(
+    fn submit(
         self,
         permit: mpsc::Permit<'_, SerializedRequest>,
         mut request: SerializedRequest,

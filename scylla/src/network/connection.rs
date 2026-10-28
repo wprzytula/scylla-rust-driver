@@ -144,11 +144,13 @@ impl RouterHandle {
             .map_err(|_| -> BrokenConnectionError {
                 BrokenConnectionErrorKind::ChannelError.into()
             })?;
-        let stream = self.streams.allocate().ok_or_else(|| {
-            error!("Could not allocate stream id");
-            InternalRequestError::UnableToAllocStreamId
-        })?;
-        let response = stream.submit(permit, serialized_request);
+        let response = self
+            .streams
+            .submit(permit, serialized_request)
+            .ok_or_else(|| {
+                error!("Could not allocate stream id");
+                InternalRequestError::UnableToAllocStreamId
+            })?;
 
         Ok(response.await?)
     }
