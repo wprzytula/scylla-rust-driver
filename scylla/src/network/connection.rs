@@ -2347,7 +2347,7 @@ struct StreamSlots {
     /// Bit `i % 64` of block `i / 64` is set if stream id `i` is allocated.
     // Only changed by read-modify-write operations, which keeps a release of
     // a bit paired with its next claim, whatever other bits change in between.
-    used: Box<[AtomicU64]>,
+    used: [AtomicU64; MAX_IN_FLIGHT_REQUESTS / u64::BITS as usize],
     /// Segment 0 holds the slots of stream ids `0..FIRST_SEGMENT_SIZE`, and
     /// segment `k > 0` those of `FIRST_SEGMENT_SIZE << (k - 1)..FIRST_SEGMENT_SIZE << k`.
     segments: [OnceLock<Box<[StdMutex<SlotState>]>>; SEGMENT_COUNT],
@@ -2371,9 +2371,7 @@ enum SlotState {
 impl StreamSlots {
     fn new() -> Self {
         Self {
-            used: (0..MAX_IN_FLIGHT_REQUESTS / 64)
-                .map(|_| AtomicU64::new(0))
-                .collect(),
+            used: std::array::from_fn(|_| AtomicU64::new(0)),
             segments: Default::default(),
             orphans: StdMutex::new(OrphanageTracker::new()),
         }
