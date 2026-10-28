@@ -18,11 +18,22 @@ use tokio::time::Instant;
 /// allocatable; none is reserved.
 pub(crate) const MAX_IN_FLIGHT_REQUESTS: usize = i16::MAX as usize + 1;
 
+/// Number of stream ids in one block of the `used` bitmap.
+const BLOCK_BITS: usize = u64::BITS as usize;
+
 // Slots are allocated in segments: the first one has `FIRST_SEGMENT_SIZE`
 // slots, and each next one doubles the total. This way a connection only
 // allocates slots for as many requests as it had in flight at once.
 const FIRST_SEGMENT_SIZE: usize = 64;
 const SEGMENT_COUNT: usize = (MAX_IN_FLIGHT_REQUESTS / FIRST_SEGMENT_SIZE).ilog2() as usize + 1;
+
+// Each stream id must have exactly one bit and one slot.
+const _: () = {
+    // `allocate` casts stream ids from `usize` to `i16`.
+    assert!(MAX_IN_FLIGHT_REQUESTS <= i16::MAX as usize + 1);
+    assert!(MAX_IN_FLIGHT_REQUESTS.is_multiple_of(BLOCK_BITS));
+    assert!(FIRST_SEGMENT_SIZE << (SEGMENT_COUNT - 1) == MAX_IN_FLIGHT_REQUESTS);
+};
 
 /// Stream ids of a connection, and the slots through which responses reach the
 /// requests waiting for them.
@@ -30,10 +41,11 @@ const SEGMENT_COUNT: usize = (MAX_IN_FLIGHT_REQUESTS / FIRST_SEGMENT_SIZE).ilog2
 /// Requests allocate stream ids themselves, so handing a response over needs no
 /// per-request allocation.
 pub(super) struct StreamSlots {
-    /// Bit `i % 64` of block `i / 64` is set if stream id `i` is allocated.
+    /// Bit `i % BLOCK_BITS` of block `i / BLOCK_BITS` is set if stream id `i`
+    /// is allocated.
     // Only changed by read-modify-write operations, which keeps a release of
     // a bit paired with its next claim, whatever other bits change in between.
-    used: [AtomicU64; MAX_IN_FLIGHT_REQUESTS / u64::BITS as usize],
+    used: [AtomicU64; MAX_IN_FLIGHT_REQUESTS / BLOCK_BITS],
     /// Segment 0 holds the slots of stream ids `0..FIRST_SEGMENT_SIZE`, and
     /// segment `k > 0` those of `FIRST_SEGMENT_SIZE << (k - 1)..FIRST_SEGMENT_SIZE << k`.
     segments: [OnceLock<Box<[StdMutex<SlotState>]>>; SEGMENT_COUNT],
@@ -73,7 +85,7 @@ impl StreamSlots {
                 // owner's reset of the slot happens before this request uses it.
                 used = block.fetch_or(bit, atomic::Ordering::Acquire);
                 if used & bit == 0 {
-                    let id = (block_index * 64) as i16 + bit.trailing_zeros() as i16;
+                    let id = (block_index * BLOCK_BITS) as i16 + bit.trailing_zeros() as i16;
                     let mut state = self.slot(id).lock().unwrap();
                     debug_assert!(
                         matches!(*state, SlotState::Free),
@@ -98,7 +110,7 @@ impl StreamSlots {
         let id = id as usize;
         // `Release` makes the slot's reset to `Free` visible to the next owner of
         // the id, see `allocate`.
-        self.used[id / 64].fetch_and(!(1 << (id % 64)), atomic::Ordering::Release);
+        self.used[id / BLOCK_BITS].fetch_and(!(1 << (id % BLOCK_BITS)), atomic::Ordering::Release);
     }
 
     /// Returns the segment holding the slot of stream `id`, and the slot's index in it.
