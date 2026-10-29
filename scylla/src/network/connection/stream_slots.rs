@@ -209,19 +209,25 @@ impl<'a> AllocatedStream<'a> {
         permit: mpsc::Permit<'_, SerializedRequest>,
         mut request: SerializedRequest,
     ) -> impl Future<Output = Result<TaskResponse, BrokenConnectionError>> + use<'a> {
-        let mut stream = SubmittedStream {
+        let stream = SubmittedStream {
             streams: self.streams,
             id: self.id,
-            released: false,
         };
         // The stream id now belongs to `stream`, so `self` must not release it.
         std::mem::forget(self);
         request.set_stream(stream.id);
         permit.send(request);
+        // `None` once the response is taken, which releases the stream id.
+        let mut stream = Some(stream);
         std::future::poll_fn(move |cx| {
-            let response = std::task::ready!(stream.poll_response(cx));
-            stream.released = true;
-            Poll::Ready(response)
+            let submitted = stream.take().expect("response polled after completion");
+            let response = submitted.poll_response(cx);
+            if response.is_pending() {
+                stream = Some(submitted);
+            } else {
+                submitted.release();
+            }
+            response
         })
     }
 }
@@ -242,13 +248,10 @@ impl Drop for AllocatedStream<'_> {
 struct SubmittedStream<'a> {
     streams: &'a StreamSlots,
     id: i16,
-    /// Set once the response is taken, which releases the stream id.
-    released: bool,
 }
 
 impl SubmittedStream<'_> {
-    /// Takes the response if it arrived, and releases the stream id.
-    /// Otherwise, the response wakes `cx`.
+    /// Takes the response if it arrived. Otherwise, the response wakes `cx`.
     fn poll_response(
         &self,
         cx: &mut Context<'_>,
@@ -266,17 +269,21 @@ impl SubmittedStream<'_> {
         let SlotState::Ready(response) = std::mem::take(&mut *state) else {
             unreachable!("stream slot polled while not allocated");
         };
-        drop(state);
-        self.streams.release(self.id);
         Poll::Ready(response)
+    }
+
+    /// Releases the stream id after its response was taken.
+    fn release(self) {
+        let (streams, id) = (self.streams, self.id);
+        // The slot is `Free` already. `Drop` would lock the slot again to see
+        // that, so skip it.
+        std::mem::forget(self);
+        streams.release(id);
     }
 }
 
 impl Drop for SubmittedStream<'_> {
     fn drop(&mut self) {
-        if self.released {
-            return;
-        }
         let mut state = self.streams.slot(self.id).lock().unwrap();
         if matches!(*state, SlotState::Waiting(_)) {
             // The reader releases the stream id when the response arrives.
@@ -435,5 +442,18 @@ mod tests {
         streams.fail_all(&BrokenConnectionErrorKind::ChannelError.into());
         assert!(response.await.is_err());
         assert_eq!(streams.allocate().unwrap().id, 0);
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "response polled after completion")]
+    async fn stream_slots_reject_poll_after_completion() {
+        let streams = StreamSlots::new();
+        let mut channel = SubmitChannel::new();
+        let mut response = channel.submit(streams.allocate().unwrap());
+        assert!(streams.complete(0, task_response(Bytes::new())));
+        assert!(futures::poll!(&mut response).is_ready());
+        // The stream id is released, and another request can own it now.
+        let _other = channel.submit(streams.allocate().unwrap());
+        let _ = futures::poll!(&mut response);
     }
 }
