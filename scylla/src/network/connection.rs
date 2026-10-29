@@ -153,7 +153,7 @@ impl RouterHandle {
     fn submit(
         &self,
         permit: mpsc::Permit<'_, SerializedRequest>,
-        mut request: SerializedRequest,
+        request: SerializedRequest,
     ) -> Result<AllocatedStream<'_>, InternalRequestError> {
         // Dropping `stream` (e.g. when the request is cancelled) releases the
         // stream id, or marks it as orphaned if the request was already submitted.
@@ -161,9 +161,7 @@ impl RouterHandle {
             error!("Could not allocate stream id");
             InternalRequestError::UnableToAllocStreamId
         })?;
-        request.set_stream(stream.id());
-        permit.send(request);
-        stream.mark_submitted();
+        stream.submit(permit, request);
         Ok(stream)
     }
 }

@@ -6,11 +6,13 @@
 
 use super::{OLD_AGE_ORPHAN_THRESHOLD, TaskResponse};
 use crate::errors::BrokenConnectionError;
+use crate::frame::SerializedRequest;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{self, AtomicU64};
 use std::task::{Context, Poll, Waker};
+use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 /// Number of stream ids usable on one connection, i.e. the maximum number of
@@ -228,12 +230,14 @@ pub(super) struct AllocatedStream<'a> {
 }
 
 impl<'a> AllocatedStream<'a> {
-    pub(super) fn id(&self) -> i16 {
-        self.id
-    }
-
-    /// Marks the request as submitted for writing, so its response may arrive.
-    pub(super) fn mark_submitted(&mut self) {
+    /// Sends `request` on this stream. Its response can arrive from now on.
+    pub(super) fn submit(
+        &mut self,
+        permit: mpsc::Permit<'_, SerializedRequest>,
+        mut request: SerializedRequest,
+    ) {
+        request.set_stream(self.id);
+        permit.send(request);
         self.submitted = true;
     }
 
@@ -309,12 +313,14 @@ impl OrphanageTracker {
 
 #[cfg(test)]
 mod tests {
-    use super::{StreamSlots, TaskResponse};
+    use super::{AllocatedStream, StreamSlots, TaskResponse};
     use crate::errors::BrokenConnectionErrorKind;
-    use crate::frame::FrameParams;
+    use crate::frame::request::options::Options;
     use crate::frame::response::ResponseOpcode;
+    use crate::frame::{FrameParams, SerializedRequest};
     use crate::test_utils::setup_tracing;
     use bytes::Bytes;
+    use tokio::sync::mpsc;
 
     fn task_response(body: Bytes) -> TaskResponse {
         TaskResponse {
@@ -324,28 +330,52 @@ mod tests {
         }
     }
 
+    /// Takes the place of the router's submit channel.
+    struct SubmitChannel {
+        sender: mpsc::Sender<SerializedRequest>,
+        receiver: mpsc::Receiver<SerializedRequest>,
+    }
+
+    impl SubmitChannel {
+        fn new() -> Self {
+            let (sender, receiver) = mpsc::channel(1);
+            Self { sender, receiver }
+        }
+
+        /// Submits a request on `stream`, and checks the stream id in its frame.
+        fn submit(&mut self, stream: &mut AllocatedStream<'_>) {
+            let id = stream.id;
+            let request = SerializedRequest::make(&Options, None, false).unwrap();
+            stream.submit(self.sender.try_reserve().unwrap(), request);
+            let frame = self.receiver.try_recv().unwrap();
+            assert_eq!(frame.get_data()[2..4], id.to_be_bytes());
+        }
+    }
+
     #[tokio::test]
     async fn stream_slots_hand_over_responses() {
         setup_tracing();
         let streams = StreamSlots::new();
+        let mut channel = SubmitChannel::new();
         let id_body = |id: i16| Bytes::copy_from_slice(&id.to_be_bytes());
 
         // 200 streams span the first three slot segments.
-        let allocated: Vec<_> = (0..200).map(|_| streams.allocate().unwrap()).collect();
+        let mut allocated: Vec<_> = (0..200).map(|_| streams.allocate().unwrap()).collect();
         for (i, stream) in allocated.iter().enumerate() {
-            assert_eq!(stream.id(), i as i16);
+            assert_eq!(stream.id, i as i16);
         }
-        for stream in allocated.iter().rev() {
-            assert!(streams.complete(stream.id(), task_response(id_body(stream.id()))));
+        for stream in &mut allocated {
+            channel.submit(stream);
         }
-        for mut stream in allocated {
-            stream.mark_submitted();
-            let id = stream.id();
+        for id in (0..200).rev() {
+            assert!(streams.complete(id, task_response(id_body(id))));
+        }
+        for (id, stream) in (0..).zip(allocated) {
             assert_eq!(stream.response().await.unwrap().body, id_body(id));
         }
 
         // All stream ids were released.
-        assert_eq!(streams.allocate().unwrap().id(), 0);
+        assert_eq!(streams.allocate().unwrap().id, 0);
         assert!(!streams.complete(0, task_response(Bytes::new())));
         assert!(!streams.complete(1000, task_response(Bytes::new())));
     }
@@ -354,40 +384,41 @@ mod tests {
     async fn stream_slots_release_cancelled_and_failed_streams() {
         setup_tracing();
         let streams = StreamSlots::new();
+        let mut channel = SubmitChannel::new();
         let orphan_count = || streams.orphans.lock().unwrap().orphans.len();
 
         // No response can arrive for a request that was not submitted.
         drop(streams.allocate().unwrap());
-        assert_eq!(streams.allocate().unwrap().id(), 0);
+        assert_eq!(streams.allocate().unwrap().id, 0);
 
         // A submitted request's stream stays allocated, as an orphan, until
         // its response arrives.
         let mut stream = streams.allocate().unwrap();
-        stream.mark_submitted();
+        channel.submit(&mut stream);
         let mut response = Box::pin(stream.response());
         assert!(futures::poll!(&mut response).is_pending());
         drop(response);
         assert_eq!(orphan_count(), 1);
-        assert_eq!(streams.allocate().unwrap().id(), 1);
+        assert_eq!(streams.allocate().unwrap().id, 1);
         assert!(streams.complete(0, task_response(Bytes::new())));
         assert_eq!(orphan_count(), 0);
-        assert_eq!(streams.allocate().unwrap().id(), 0);
+        assert_eq!(streams.allocate().unwrap().id, 0);
 
         // A response that arrived but was not taken.
         let mut stream = streams.allocate().unwrap();
-        stream.mark_submitted();
+        channel.submit(&mut stream);
         assert!(streams.complete(0, task_response(Bytes::new())));
         drop(stream);
         assert_eq!(orphan_count(), 0);
-        assert_eq!(streams.allocate().unwrap().id(), 0);
+        assert_eq!(streams.allocate().unwrap().id, 0);
 
         // A request waiting when the connection breaks.
         let mut stream = streams.allocate().unwrap();
-        stream.mark_submitted();
+        channel.submit(&mut stream);
         let mut response = Box::pin(stream.response());
         assert!(futures::poll!(&mut response).is_pending());
         streams.fail_all(&BrokenConnectionErrorKind::ChannelError.into());
         assert!(response.await.is_err());
-        assert_eq!(streams.allocate().unwrap().id(), 0);
+        assert_eq!(streams.allocate().unwrap().id, 0);
     }
 }
