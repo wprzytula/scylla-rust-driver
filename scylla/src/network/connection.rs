@@ -69,7 +69,7 @@ use uuid::Uuid;
 mod stream_slots;
 
 pub(crate) use stream_slots::MAX_IN_FLIGHT_REQUESTS;
-use stream_slots::{AllocatedStream, StreamSlots};
+use stream_slots::StreamSlots;
 
 // FIXME: Make this constants configurable
 // The term "orphan" refers to stream ids, that were allocated for a {request, response} that no
@@ -144,25 +144,13 @@ impl RouterHandle {
             .map_err(|_| -> BrokenConnectionError {
                 BrokenConnectionErrorKind::ChannelError.into()
             })?;
-        let stream = self.submit(permit, serialized_request)?;
-
-        Ok(stream.response().await?)
-    }
-
-    /// Allocates a stream id for `request` and submits it for writing.
-    fn submit(
-        &self,
-        permit: mpsc::Permit<'_, SerializedRequest>,
-        request: SerializedRequest,
-    ) -> Result<AllocatedStream<'_>, InternalRequestError> {
-        // Dropping `stream` (e.g. when the request is cancelled) releases the
-        // stream id, or marks it as orphaned if the request was already submitted.
-        let mut stream = self.streams.allocate().ok_or_else(|| {
+        let stream = self.streams.allocate().ok_or_else(|| {
             error!("Could not allocate stream id");
             InternalRequestError::UnableToAllocStreamId
         })?;
-        stream.submit(permit, request);
-        Ok(stream)
+        let response = stream.submit(permit, serialized_request);
+
+        Ok(response.await?)
     }
 }
 

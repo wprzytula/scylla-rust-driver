@@ -95,12 +95,7 @@ impl StreamSlots {
                     );
                     *state = SlotState::Waiting(None);
                     drop(state);
-                    return Some(AllocatedStream {
-                        streams: self,
-                        id,
-                        submitted: false,
-                        released: false,
-                    });
+                    return Some(AllocatedStream { streams: self, id });
                 }
             }
         }
@@ -193,31 +188,65 @@ impl StreamSlots {
     }
 }
 
-/// A stream id allocated for a request.
+/// A stream id allocated for a request that is not sent yet.
 ///
-/// Dropping it before taking the response (e.g. when the request is cancelled)
-/// releases the stream id, or marks it as orphaned if the response may still
-/// arrive.
+/// Dropping it releases the stream id.
 pub(super) struct AllocatedStream<'a> {
     streams: &'a StreamSlots,
     id: i16,
-    submitted: bool,
+}
+
+impl<'a> AllocatedStream<'a> {
+    /// Sends `request` on this stream, and returns a future that waits for the
+    /// response.
+    ///
+    /// Dropping the future before the response is taken (e.g. when the request
+    /// is cancelled) marks the stream id as orphaned if the response may still
+    /// arrive, or releases it.
+    // Not an async fn, so that the request is sent before the first poll.
+    pub(super) fn submit(
+        self,
+        permit: mpsc::Permit<'_, SerializedRequest>,
+        mut request: SerializedRequest,
+    ) -> impl Future<Output = Result<TaskResponse, BrokenConnectionError>> + use<'a> {
+        let mut stream = SubmittedStream {
+            streams: self.streams,
+            id: self.id,
+            released: false,
+        };
+        // The stream id now belongs to `stream`, so `self` must not release it.
+        std::mem::forget(self);
+        request.set_stream(stream.id);
+        permit.send(request);
+        std::future::poll_fn(move |cx| {
+            let response = std::task::ready!(stream.poll_response(cx));
+            stream.released = true;
+            Poll::Ready(response)
+        })
+    }
+}
+
+impl Drop for AllocatedStream<'_> {
+    fn drop(&mut self) {
+        // No response can arrive for a request that was not sent.
+        *self.streams.slot(self.id).lock().unwrap() = SlotState::Free;
+        self.streams.release(self.id);
+    }
+}
+
+/// The stream id of a request that was sent, so its response can arrive.
+///
+/// Dropping it before the response is taken (e.g. when the request is
+/// cancelled) marks the stream id as orphaned if the response may still
+/// arrive, or releases it.
+struct SubmittedStream<'a> {
+    streams: &'a StreamSlots,
+    id: i16,
     /// Set once the response is taken, which releases the stream id.
     released: bool,
 }
 
-impl<'a> AllocatedStream<'a> {
-    /// Sends `request` on this stream. Its response can arrive from now on.
-    pub(super) fn submit(
-        &mut self,
-        permit: mpsc::Permit<'_, SerializedRequest>,
-        mut request: SerializedRequest,
-    ) {
-        request.set_stream(self.id);
-        permit.send(request);
-        self.submitted = true;
-    }
-
+impl SubmittedStream<'_> {
     /// Takes the response if it arrived, and releases the stream id.
     /// Otherwise, the response wakes `cx`.
     fn poll_response(
@@ -241,30 +270,15 @@ impl<'a> AllocatedStream<'a> {
         self.streams.release(self.id);
         Poll::Ready(response)
     }
-
-    /// Waits for the response.
-    // Not an async fn, which would keep `self` twice in its state.
-    pub(super) fn response(
-        mut self,
-    ) -> impl Future<Output = Result<TaskResponse, BrokenConnectionError>> + use<'a> {
-        std::future::poll_fn(move |cx| {
-            // Borrowed as a whole, so that the closure owns the whole stream,
-            // rather than copies of its fields.
-            let this = &mut self;
-            let response = std::task::ready!(this.poll_response(cx));
-            this.released = true;
-            Poll::Ready(response)
-        })
-    }
 }
 
-impl Drop for AllocatedStream<'_> {
+impl Drop for SubmittedStream<'_> {
     fn drop(&mut self) {
         if self.released {
             return;
         }
         let mut state = self.streams.slot(self.id).lock().unwrap();
-        if self.submitted && matches!(*state, SlotState::Waiting(_)) {
+        if matches!(*state, SlotState::Waiting(_)) {
             // The reader releases the stream id when the response arrives.
             *state = SlotState::Orphaned;
             self.streams.orphans.lock().unwrap().insert(self.id);
@@ -315,7 +329,7 @@ impl OrphanageTracker {
 #[cfg(test)]
 mod tests {
     use super::{AllocatedStream, StreamSlots, TaskResponse};
-    use crate::errors::BrokenConnectionErrorKind;
+    use crate::errors::{BrokenConnectionError, BrokenConnectionErrorKind};
     use crate::frame::request::options::Options;
     use crate::frame::response::ResponseOpcode;
     use crate::frame::{FrameParams, SerializedRequest};
@@ -344,12 +358,16 @@ mod tests {
         }
 
         /// Submits a request on `stream`, and checks the stream id in its frame.
-        fn submit(&mut self, stream: &mut AllocatedStream<'_>) {
+        fn submit<'a>(
+            &mut self,
+            stream: AllocatedStream<'a>,
+        ) -> impl Future<Output = Result<TaskResponse, BrokenConnectionError>> + use<'a> {
             let id = stream.id;
             let request = SerializedRequest::make(&Options, None, false).unwrap();
-            stream.submit(self.sender.try_reserve().unwrap(), request);
+            let response = stream.submit(self.sender.try_reserve().unwrap(), request);
             let frame = self.receiver.try_recv().unwrap();
             assert_eq!(frame.get_data()[2..4], id.to_be_bytes());
+            response
         }
     }
 
@@ -361,18 +379,19 @@ mod tests {
         let id_body = |id: i16| Bytes::copy_from_slice(&id.to_be_bytes());
 
         // 200 streams span the first three slot segments.
-        let mut allocated: Vec<_> = (0..200).map(|_| streams.allocate().unwrap()).collect();
+        let allocated: Vec<_> = (0..200).map(|_| streams.allocate().unwrap()).collect();
         for (i, stream) in allocated.iter().enumerate() {
             assert_eq!(stream.id, i as i16);
         }
-        for stream in &mut allocated {
-            channel.submit(stream);
-        }
+        let responses: Vec<_> = allocated
+            .into_iter()
+            .map(|stream| channel.submit(stream))
+            .collect();
         for id in (0..200).rev() {
             assert!(streams.complete(id, task_response(id_body(id))));
         }
-        for (id, stream) in (0..).zip(allocated) {
-            assert_eq!(stream.response().await.unwrap().body, id_body(id));
+        for (id, response) in (0..).zip(responses) {
+            assert_eq!(response.await.unwrap().body, id_body(id));
         }
 
         // All stream ids were released.
@@ -394,9 +413,7 @@ mod tests {
 
         // A submitted request's stream stays allocated, as an orphan, until
         // its response arrives.
-        let mut stream = streams.allocate().unwrap();
-        channel.submit(&mut stream);
-        let mut response = Box::pin(stream.response());
+        let mut response = channel.submit(streams.allocate().unwrap());
         assert!(futures::poll!(&mut response).is_pending());
         drop(response);
         assert_eq!(orphan_count(), 1);
@@ -406,17 +423,14 @@ mod tests {
         assert_eq!(streams.allocate().unwrap().id, 0);
 
         // A response that arrived but was not taken.
-        let mut stream = streams.allocate().unwrap();
-        channel.submit(&mut stream);
+        let response = channel.submit(streams.allocate().unwrap());
         assert!(streams.complete(0, task_response(Bytes::new())));
-        drop(stream);
+        drop(response);
         assert_eq!(orphan_count(), 0);
         assert_eq!(streams.allocate().unwrap().id, 0);
 
         // A request waiting when the connection breaks.
-        let mut stream = streams.allocate().unwrap();
-        channel.submit(&mut stream);
-        let mut response = Box::pin(stream.response());
+        let mut response = channel.submit(streams.allocate().unwrap());
         assert!(futures::poll!(&mut response).is_pending());
         streams.fail_all(&BrokenConnectionErrorKind::ChannelError.into());
         assert!(response.await.is_err());
