@@ -165,29 +165,6 @@ impl StreamSlots {
         }
     }
 
-    fn poll_response(
-        &self,
-        id: i16,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<TaskResponse, BrokenConnectionError>> {
-        let mut state = self.slot(id).lock().unwrap();
-        if let SlotState::Waiting(waker) = &mut *state {
-            match waker {
-                Some(waker) => waker.clone_from(cx.waker()),
-                None => *waker = Some(cx.waker().clone()),
-            }
-            return Poll::Pending;
-        }
-        // The polling request owns the slot. Only it can make the slot `Free`
-        // or `Orphaned`, so the state is `Ready` if it is not `Waiting`.
-        let SlotState::Ready(response) = std::mem::take(&mut *state) else {
-            unreachable!("stream slot polled while not allocated");
-        };
-        drop(state);
-        self.release(id);
-        Poll::Ready(response)
-    }
-
     /// Fails all requests that wait for a response.
     pub(super) fn fail_all(&self, error: &BrokenConnectionError) {
         let slots = self
@@ -241,6 +218,30 @@ impl<'a> AllocatedStream<'a> {
         self.submitted = true;
     }
 
+    /// Takes the response if it arrived, and releases the stream id.
+    /// Otherwise, the response wakes `cx`.
+    fn poll_response(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<TaskResponse, BrokenConnectionError>> {
+        let mut state = self.streams.slot(self.id).lock().unwrap();
+        if let SlotState::Waiting(waker) = &mut *state {
+            match waker {
+                Some(waker) => waker.clone_from(cx.waker()),
+                None => *waker = Some(cx.waker().clone()),
+            }
+            return Poll::Pending;
+        }
+        // This stream owns the slot. Only it can make the slot `Free` or
+        // `Orphaned`, so the state is `Ready` if it is not `Waiting`.
+        let SlotState::Ready(response) = std::mem::take(&mut *state) else {
+            unreachable!("stream slot polled while not allocated");
+        };
+        drop(state);
+        self.streams.release(self.id);
+        Poll::Ready(response)
+    }
+
     /// Waits for the response.
     // Not an async fn, which would keep `self` twice in its state.
     pub(super) fn response(
@@ -250,7 +251,7 @@ impl<'a> AllocatedStream<'a> {
             // Borrowed as a whole, so that the closure owns the whole stream,
             // rather than copies of its fields.
             let this = &mut self;
-            let response = std::task::ready!(this.streams.poll_response(this.id, cx));
+            let response = std::task::ready!(this.poll_response(cx));
             this.released = true;
             Poll::Ready(response)
         })
