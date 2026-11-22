@@ -276,11 +276,30 @@ impl Default for TcpSocketOptions {
     }
 }
 
+/// Sends the tablet info that responses carry to the tablet updater.
+pub(crate) type TabletSender = mpsc::Sender<(Arc<TableSpec<'static>>, RawTablet)>;
+
+/// The kind of a connection, together with the fields that only this kind uses.
+///
+/// The owner of the connection picks the kind: a pool makes regular
+/// connections, and the control connection establisher makes control ones.
+#[derive(Clone)]
+pub(crate) enum ConnectionKind {
+    /// A pool connection. It serves user requests.
+    Regular {
+        /// Passes the tablet info that responses carry to the tablet updater.
+        tablet_sender: TabletSender,
+    },
+
+    /// The control connection. It fetches metadata and receives server events.
+    Control,
+}
+
 /// Configuration used for new connections.
 ///
 /// Before being used for a particular connection, should be customized
-/// for a specific endpoint by converting to [HostConnectionConfig]
-/// using [ConnectionConfig::to_host_connection_config].
+/// for a specific endpoint and connection kind by converting to
+/// [HostConnectionConfig] using [ConnectionConfig::to_host_connection_config].
 #[derive(Clone)]
 pub(crate) struct ConnectionConfig {
     pub(crate) local_ip_address: Option<IpAddr>,
@@ -298,7 +317,6 @@ pub(crate) struct ConnectionConfig {
 
     pub(crate) keepalive_interval: Option<Duration>,
     pub(crate) keepalive_timeout: Option<Duration>,
-    pub(crate) tablet_sender: Option<mpsc::Sender<(Arc<TableSpec<'static>>, RawTablet)>>,
 
     pub(crate) identity: SelfIdentity<'static>,
 
@@ -323,10 +341,11 @@ pub(crate) struct ConnectionConfig {
 }
 
 impl ConnectionConfig {
-    /// Customizes the config for a specific endpoint.
+    /// Customizes the config for a specific endpoint and connection kind.
     pub(crate) fn to_host_connection_config(
         &self,
         endpoint: &UntranslatedEndpoint,
+        kind: ConnectionKind,
     ) -> HostConnectionConfig {
         let tls_config = self
             .tls_provider
@@ -347,10 +366,10 @@ impl ConnectionConfig {
             write_coalescing_delay: self.write_coalescing_delay.clone(),
             keepalive_interval: self.keepalive_interval,
             keepalive_timeout: self.keepalive_timeout,
-            tablet_sender: self.tablet_sender.clone(),
             identity: self.identity.clone(),
             session_id: self.session_id,
             driver_config_reporter: self.driver_config_reporter.clone(),
+            kind,
             #[cfg(test)]
             transport_factory: None,
         }
@@ -377,12 +396,13 @@ pub(crate) struct HostConnectionConfig {
 
     pub(crate) keepalive_interval: Option<Duration>,
     pub(crate) keepalive_timeout: Option<Duration>,
-    pub(crate) tablet_sender: Option<mpsc::Sender<(Arc<TableSpec<'static>>, RawTablet)>>,
 
     pub(crate) identity: SelfIdentity<'static>,
     pub(crate) session_id: Uuid,
     // should be Some only in control connections
     pub(crate) driver_config_reporter: Option<Arc<DriverConfigReporter>>,
+
+    pub(crate) kind: ConnectionKind,
 
     #[cfg(test)]
     pub(crate) transport_factory: Option<Arc<scylla_proxy::TransportFactory>>,
@@ -391,6 +411,9 @@ pub(crate) struct HostConnectionConfig {
 #[cfg(test)]
 impl Default for HostConnectionConfig {
     fn default() -> Self {
+        // The receiver is dropped at once: tests do not update tablets, and
+        // connections ignore a failed send of tablet info.
+        let (tablet_sender, _) = mpsc::channel(1);
         Self {
             local_ip_address: None,
             shard_aware_local_port_range: ShardAwarePortRange::EPHEMERAL_PORT_RANGE,
@@ -408,8 +431,6 @@ impl Default for HostConnectionConfig {
             keepalive_interval: None,
             keepalive_timeout: None,
 
-            tablet_sender: None,
-
             identity: SelfIdentity::default(),
 
             // Test connections do not correlate anything in `system.clients`.
@@ -417,6 +438,8 @@ impl Default for HostConnectionConfig {
 
             // Test connections do not report their configuration.
             driver_config_reporter: None,
+
+            kind: ConnectionKind::Regular { tablet_sender },
 
             #[cfg(test)]
             transport_factory: None,
@@ -443,8 +466,6 @@ impl Default for ConnectionConfig {
             // Note: this is different than SessionConfig default values.
             keepalive_interval: None,
             keepalive_timeout: None,
-
-            tablet_sender: None,
 
             identity: SelfIdentity::default(),
 
@@ -2003,10 +2024,9 @@ impl Connection {
         table: &Arc<TableSpec<'static>>,
         response: QueryResponse,
     ) -> QueryResponse {
-        if let (Some(sender), Some(tablet_data)) = (
-            self.config.tablet_sender.as_ref(),
-            response.custom_payload.as_deref(),
-        ) {
+        if let (ConnectionKind::Regular { tablet_sender }, Some(tablet_data)) =
+            (&self.config.kind, response.custom_payload.as_deref())
+        {
             match RawTablet::from_custom_payload(tablet_data) {
                 Some(Ok(tablet)) => {
                     tracing::trace!(
@@ -2015,7 +2035,7 @@ impl Connection {
                         table.table_name(),
                         tablet
                     );
-                    let _ = sender.send((Arc::clone(table), tablet)).await;
+                    let _ = tablet_sender.send((Arc::clone(table), tablet)).await;
                 }
                 Some(Err(e)) => {
                     tracing::warn!("Error while parsing tablet info from custom payload: {}", e);

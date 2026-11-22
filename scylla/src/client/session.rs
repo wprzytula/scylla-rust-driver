@@ -1509,7 +1509,6 @@ impl Session {
                 .then_some(config.write_coalescing_delay),
             keepalive_interval: config.keepalive_interval,
             keepalive_timeout: config.keepalive_timeout,
-            tablet_sender: Some(tablet_sender),
             identity: config.identity,
             session_id,
             // Pool connections do not report the configuration: only the control
@@ -1519,6 +1518,7 @@ impl Session {
         };
 
         let pool_config = PoolConfig {
+            tablet_sender,
             pool_size: config.connection_pool_size,
             can_use_shard_aware_port: !config.disallow_shard_aware_port,
             reconnect_policy,

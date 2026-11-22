@@ -35,7 +35,7 @@ use crate::cluster::metadata::{
 use crate::cluster::node::resolve_contact_points;
 use crate::errors::{ConnectionPoolError, MetadataError, NewSessionError};
 use crate::frame::server_event_type::EventType;
-use crate::network::{ConnectionConfig, open_connection};
+use crate::network::{ConnectionConfig, ConnectionKind, open_connection};
 use crate::policies::host_filter::HostFilter;
 use crate::routing::NodeLocationPreference;
 use crate::utils::safe_format::IteratorSafeFormatExt;
@@ -133,9 +133,6 @@ impl ControlConnectionEstablisher {
         Ok(ControlConnectionEstablisher {
             control_connection_config: ConnectionConfig {
                 driver_config_reporter,
-                // Tablets are a concern of the pools only: the control connection
-                // must not feed the tablet updater.
-                tablet_sender: None,
                 ..connection_config
             },
             cc_config: ControlConnectionConfig {
@@ -439,7 +436,7 @@ impl ControlConnectionEstablisher {
         let open_result = open_connection(
             &endpoint,
             None,
-            &config.to_host_connection_config(&endpoint),
+            &config.to_host_connection_config(&endpoint, ConnectionKind::Control),
         )
         .await;
 

@@ -281,8 +281,8 @@ mod tests {
     use crate::cluster::control_connection::{ControlConnectionCache, MetadataRequestTimeouts};
     use crate::cluster::metadata::{SchemaMetadataFetchMode, UntranslatedEndpoint};
     use crate::cluster::node::ResolvedContactPoint;
-    use crate::network::HostConnectionConfig;
     use crate::network::open_connection;
+    use crate::network::{ConnectionKind, HostConnectionConfig};
     use crate::routing::ShardInfo;
     use crate::test_utils::setup_tracing;
 
@@ -420,6 +420,7 @@ mod tests {
                 &endpoint,
                 None,
                 &HostConnectionConfig {
+                    kind: ConnectionKind::Control,
                     event_sender: Some((events_sender, vec![])),
                     ..Default::default()
                 },

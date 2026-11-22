@@ -1,6 +1,6 @@
 use super::connection::{
-    Connection, ConnectionConfig, ErrorReceiver, HostConnectionConfig, VerifiedKeyspaceName,
-    open_connection, open_connection_to_shard_aware_port,
+    Connection, ConnectionConfig, ConnectionKind, ErrorReceiver, HostConnectionConfig,
+    TabletSender, VerifiedKeyspaceName, open_connection, open_connection_to_shard_aware_port,
 };
 
 use crate::errors::{
@@ -66,6 +66,9 @@ impl Default for PoolSize {
 /// connection. These come from a separate [`ConnectionConfig`].
 #[derive(Clone)]
 pub(crate) struct PoolConfig {
+    /// Passed to every connection of the pool, so that they can feed the
+    /// tablet updater. Only pool connections get it.
+    pub(crate) tablet_sender: TabletSender,
     pub(crate) pool_size: PoolSize,
     pub(crate) can_use_shard_aware_port: bool,
     pub(crate) reconnect_policy: Arc<dyn ReconnectPolicy>,
@@ -74,7 +77,11 @@ pub(crate) struct PoolConfig {
 #[cfg(test)]
 impl Default for PoolConfig {
     fn default() -> Self {
+        // The receiver is dropped at once: tests do not update tablets, and
+        // connections ignore a failed send of tablet info.
+        let (tablet_sender, _) = mpsc::channel(1);
         Self {
+            tablet_sender,
             pool_size: Default::default(),
             can_use_shard_aware_port: true,
             reconnect_policy: Arc::new(ExponentialReconnectPolicy::new()),
@@ -90,7 +97,12 @@ impl PoolConfig {
     ) -> (HostPoolConfig, Box<dyn ReconnectPolicySession>) {
         let host_reconnect_policy = self.reconnect_policy.new_session();
         let host_pool_config = HostPoolConfig {
-            connection_config: connection_config.to_host_connection_config(endpoint),
+            connection_config: connection_config.to_host_connection_config(
+                endpoint,
+                ConnectionKind::Regular {
+                    tablet_sender: self.tablet_sender.clone(),
+                },
+            ),
             pool_size: self.pool_size,
             can_use_shard_aware_port: self.can_use_shard_aware_port,
         };
