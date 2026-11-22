@@ -420,8 +420,11 @@ mod tests {
                 &endpoint,
                 None,
                 &HostConnectionConfig {
-                    kind: ConnectionKind::Control,
-                    event_sender: Some((events_sender, vec![])),
+                    kind: ConnectionKind::Control {
+                        event_sender: events_sender,
+                        event_types: vec![],
+                        driver_config_reporter: None,
+                    },
                     ..Default::default()
                 },
             )

@@ -1502,7 +1502,6 @@ impl Session {
             tls_provider,
             authenticator: config.authenticator,
             connect_timeout: config.connect_timeout,
-            event_sender: None,
             address_translator: config.address_translator,
             write_coalescing_delay: config
                 .enable_write_coalescing
@@ -1511,10 +1510,6 @@ impl Session {
             keepalive_timeout: config.keepalive_timeout,
             identity: config.identity,
             session_id,
-            // Pool connections do not report the configuration: only the control
-            // connection's config gets the reporter, in
-            // `ControlConnectionEstablisher::new`.
-            driver_config_reporter: None,
         };
 
         let pool_config = PoolConfig {

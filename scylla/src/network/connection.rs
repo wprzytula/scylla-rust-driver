@@ -292,7 +292,21 @@ pub(crate) enum ConnectionKind {
     },
 
     /// The control connection. It fetches metadata and receives server events.
-    Control,
+    Control {
+        /// Passes the received server events on.
+        event_sender: mpsc::Sender<Event>,
+
+        /// The server events that the connection `REGISTER`s for.
+        event_types: Vec<EventType>,
+
+        /// Builds the configuration report sent in `STARTUP`. `None` disables
+        /// reporting.
+        ///
+        /// Only the control connection reports: the report's value is the same
+        /// for every connection of a session, so sending it on all of them
+        /// would only bloat their `STARTUP` frames.
+        driver_config_reporter: Option<Arc<DriverConfigReporter>>,
+    },
 }
 
 /// Configuration used for new connections.
@@ -309,8 +323,6 @@ pub(crate) struct ConnectionConfig {
     pub(crate) timestamp_generator: Option<Arc<dyn TimestampGenerator>>,
     pub(crate) tls_provider: Option<TlsProvider>,
     pub(crate) connect_timeout: std::time::Duration,
-    // should be Some only in control connections,
-    pub(crate) event_sender: Option<(mpsc::Sender<Event>, Vec<EventType>)>,
     pub(crate) authenticator: Option<Arc<dyn AuthenticatorProvider>>,
     pub(crate) address_translator: Option<Arc<dyn AddressTranslator>>,
     pub(crate) write_coalescing_delay: Option<WriteCoalescingDelay>,
@@ -326,18 +338,6 @@ pub(crate) struct ConnectionConfig {
     /// Reported to the cluster in `STARTUP`, so that the `system.clients` rows
     /// of all connections belonging to one session can be correlated.
     pub(crate) session_id: Uuid,
-
-    /// Builds the configuration report sent in `STARTUP`. `None` disables
-    /// reporting.
-    ///
-    /// Should be `Some` only in control connections: the report's value is the
-    /// same for every connection of a session, so sending it on all of them
-    /// would only bloat their `STARTUP` frames. It is put on the control
-    /// connection's config in [`ControlConnectionEstablisher::new`].
-    ///
-    /// [`ControlConnectionEstablisher::new`]:
-    ///     crate::cluster::metadata::cc_establisher::ControlConnectionEstablisher::new
-    pub(crate) driver_config_reporter: Option<Arc<DriverConfigReporter>>,
 }
 
 impl ConnectionConfig {
@@ -360,7 +360,6 @@ impl ConnectionConfig {
             timestamp_generator: self.timestamp_generator.clone(),
             tls_config,
             connect_timeout: self.connect_timeout,
-            event_sender: self.event_sender.clone(),
             authenticator: self.authenticator.clone(),
             address_translator: self.address_translator.clone(),
             write_coalescing_delay: self.write_coalescing_delay.clone(),
@@ -368,7 +367,6 @@ impl ConnectionConfig {
             keepalive_timeout: self.keepalive_timeout,
             identity: self.identity.clone(),
             session_id: self.session_id,
-            driver_config_reporter: self.driver_config_reporter.clone(),
             kind,
             #[cfg(test)]
             transport_factory: None,
@@ -388,8 +386,6 @@ pub(crate) struct HostConnectionConfig {
     pub(crate) timestamp_generator: Option<Arc<dyn TimestampGenerator>>,
     pub(crate) tls_config: Option<TlsConfig>,
     pub(crate) connect_timeout: std::time::Duration,
-    // should be Some only in control connections,
-    pub(crate) event_sender: Option<(mpsc::Sender<Event>, Vec<EventType>)>,
     pub(crate) authenticator: Option<Arc<dyn AuthenticatorProvider>>,
     pub(crate) address_translator: Option<Arc<dyn AddressTranslator>>,
     pub(crate) write_coalescing_delay: Option<WriteCoalescingDelay>,
@@ -399,8 +395,6 @@ pub(crate) struct HostConnectionConfig {
 
     pub(crate) identity: SelfIdentity<'static>,
     pub(crate) session_id: Uuid,
-    // should be Some only in control connections
-    pub(crate) driver_config_reporter: Option<Arc<DriverConfigReporter>>,
 
     pub(crate) kind: ConnectionKind,
 
@@ -420,7 +414,6 @@ impl Default for HostConnectionConfig {
             compression: None,
             tcp_socket_options: TcpSocketOptions::default(),
             timestamp_generator: None,
-            event_sender: None,
             tls_config: None,
             connect_timeout: std::time::Duration::from_secs(5),
             authenticator: None,
@@ -435,9 +428,6 @@ impl Default for HostConnectionConfig {
 
             // Test connections do not correlate anything in `system.clients`.
             session_id: Uuid::nil(),
-
-            // Test connections do not report their configuration.
-            driver_config_reporter: None,
 
             kind: ConnectionKind::Regular { tablet_sender },
 
@@ -456,7 +446,6 @@ impl Default for ConnectionConfig {
             compression: None,
             tcp_socket_options: TcpSocketOptions::default(),
             timestamp_generator: None,
-            event_sender: None,
             tls_provider: None,
             connect_timeout: std::time::Duration::from_secs(5),
             authenticator: None,
@@ -471,9 +460,6 @@ impl Default for ConnectionConfig {
 
             // Test connections do not correlate anything in `system.clients`.
             session_id: Uuid::nil(),
-
-            // Test connections do not report their configuration.
-            driver_config_reporter: None,
         }
     }
 }
@@ -1669,10 +1655,14 @@ impl Connection {
             node_address,
         );
 
+        let event_sender = match config.kind {
+            ConnectionKind::Control { event_sender, .. } => Some(event_sender),
+            ConnectionKind::Regular { .. } => None,
+        };
         let r = Self::reader(
             BufReader::with_capacity(8192, read_half),
             streams,
-            config.event_sender.map(|(sender, _)| sender),
+            event_sender,
             config.compression,
         );
         let w = Self::writer(
@@ -2227,9 +2217,11 @@ pub(crate) async fn open_connection(
 
     // The configuration report, sent only by the control connection: its value is
     // the same for every connection of a session, so sending it on all of them
-    // would only bloat their STARTUP frames. Only the control connection's config
-    // carries a reporter - see `ConnectionConfig::driver_config_reporter`.
-    if let Some(reporter) = config.driver_config_reporter.as_deref()
+    // would only bloat their STARTUP frames.
+    if let ConnectionKind::Control {
+        driver_config_reporter: Some(reporter),
+        ..
+    } = &config.kind
         && let Some(report) = reporter.report(connection.is_to_scylladb())
     {
         options.insert(Cow::Borrowed(options::DRIVER_CONFIG), Cow::Owned(report));
@@ -2265,7 +2257,7 @@ pub(crate) async fn open_connection(
     }
 
     /* If this is a control connection, REGISTER to receive all event types. */
-    if let Some((_, ref event_types)) = connection.config.event_sender {
+    if let ConnectionKind::Control { event_types, .. } = &connection.config.kind {
         connection.register(event_types.clone()).await?;
     }
 
