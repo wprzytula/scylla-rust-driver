@@ -1519,7 +1519,6 @@ impl Session {
         };
 
         let pool_config = PoolConfig {
-            connection_config,
             pool_size: config.connection_pool_size,
             can_use_shard_aware_port: !config.disallow_shard_aware_port,
             reconnect_policy,
@@ -1560,6 +1559,7 @@ impl Session {
 
         let cluster = Cluster::new(
             known_nodes,
+            connection_config,
             pool_config,
             driver_config_reporter,
             config.keyspaces_to_fetch,
