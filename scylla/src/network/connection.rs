@@ -98,13 +98,20 @@ pub enum WriteCoalescingDelay {
 
 /// Consistency of the statements that a [`Connection`] sends on its own,
 /// outside of the [`Session`](crate::client::session::Session) request path:
-/// `USE <keyspace>` and the metadata queries of the control connection.
+/// the metadata queries of the control connection.
 ///
 /// It applies only to a statement that does not set its own consistency.
 ///
 /// The value only keeps the level that earlier versions of the driver used.
 /// It is not a decision that this level is the correct one for these statements.
 const INTERNAL_STATEMENT_CONSISTENCY: Consistency = Consistency::LocalQuorum;
+
+/// Consistency of `USE <keyspace>`.
+///
+/// The server does not read the consistency of `USE`, but the `QUERY` frame
+/// must carry one. The value keeps the level that earlier versions of the
+/// driver sent.
+const USE_KEYSPACE_CONSISTENCY: Consistency = Consistency::LocalQuorum;
 
 pub(crate) struct Connection {
     _worker_handle: RemoteHandle<()>,
@@ -1404,7 +1411,15 @@ impl Connection {
             false => format!("USE {}", keyspace_name.as_str()).into(),
         };
 
-        let query_response = self.query_raw_unpaged(&query).await?;
+        let query_response = self
+            .query_raw_with_consistency(
+                &query,
+                USE_KEYSPACE_CONSISTENCY,
+                None,
+                None,
+                PagingState::start(),
+            )
+            .await?;
         Self::verify_use_keyspace_result(keyspace_name, query_response)
     }
 
