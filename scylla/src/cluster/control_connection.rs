@@ -19,6 +19,7 @@ use crate::errors::{
 };
 use crate::frame::response::event::Event;
 use crate::network::Connection;
+use crate::policies::retry::FallthroughRetryPolicy;
 use crate::serialize::row::SerializeRow;
 use crate::statement::prepared::PreparedStatement;
 use crate::statement::{Consistency, Statement};
@@ -76,13 +77,14 @@ impl MetadataRequestTimeouts {
 
 /// Builds the execution profile of the metadata queries.
 ///
-/// [`Connection::execute_iter`] reads its consistency, serial consistency and
-/// client-side timeout.
+/// [`Connection::execute_iter`] reads its consistency, serial consistency,
+/// client-side timeout and retry policy.
 fn metadata_execution_profile(timeouts: &MetadataRequestTimeouts) -> ExecutionProfile {
     ExecutionProfile::builder()
         .consistency(METADATA_QUERY_CONSISTENCY)
         .serial_consistency(None)
         .request_timeout(Some(timeouts.clientside()))
+        .retry_policy(Arc::new(FallthroughRetryPolicy::new()))
         .build()
 }
 

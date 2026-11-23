@@ -1178,11 +1178,12 @@ impl Connection {
     ///
     /// These settings come from `profile`:
     /// - the consistency and the serial consistency,
-    /// - the client-side timeout.
+    /// - the client-side timeout,
+    /// - the retry policy.
     ///
-    /// This method does not read the policies of `profile`. Also, it does not
-    /// read the statement's own consistency, serial consistency, timeout or
-    /// execution profile handle.
+    /// This method does not read the load balancing policy and the speculative
+    /// execution policy of `profile`. Also, it does not read the statement's own
+    /// consistency, serial consistency, timeout or execution profile handle.
     ///
     /// NOTE: This function only supports executing SELECT statements.
     /// More specifically, it expects that each response is of Rows kind.
@@ -2476,10 +2477,14 @@ mod tests {
         RequestAttemptError, RequestError,
     };
     use crate::frame::response::result::{ColumnSpec, ColumnType, NativeType, TableSpec};
+    use crate::policies::retry::{
+        FallthroughRetryPolicy, RequestInfo, RetryDecision, RetryPolicy, RetrySession,
+    };
     use crate::statement::Consistency;
     use crate::statement::prepared::PreparedStatement;
     use crate::statement::unprepared::Statement;
     use crate::test_utils::{dry_mode_handshake_rules, setup_tracing};
+    use crate::value::Row;
     use futures::{StreamExt, TryStreamExt};
     use std::collections::HashMap;
     use std::net::SocketAddr;
@@ -2599,9 +2604,10 @@ mod tests {
     }
 
     /// The profile of the `execute_iter` tests, with the given client-side
-    /// timeout.
+    /// timeout. Like the profile of the metadata queries, it does not retry.
     fn paging_test_profile(request_timeout: Option<Duration>) -> ExecutionProfile {
         ExecutionProfile::builder()
+            .retry_policy(Arc::new(FallthroughRetryPolicy::new()))
             .request_timeout(request_timeout)
             .build()
     }
@@ -2769,9 +2775,9 @@ mod tests {
         fixture.finish().await;
     }
 
-    /// Regression test for mapping of server errors on this path. As it employs
-    /// `FallthroughRetryPolicy`, the very first attempt is terminal - both for the
-    /// first page and for subsequent ones - and the DB error is surfaced verbatim.
+    /// Regression test for mapping of server errors on this path. As its profile
+    /// uses `FallthroughRetryPolicy`, the very first attempt is terminal - both for
+    /// the first page and for subsequent ones - and the DB error is surfaced verbatim.
     #[tokio::test]
     async fn connection_execute_iter_server_error() {
         setup_tracing();
@@ -2940,6 +2946,140 @@ mod tests {
 
         let err = rows_stream.next().await.unwrap().unwrap_err();
         assert_unexpected_response(err);
+
+        fixture.finish().await;
+    }
+
+    /// A retry policy that makes the same decision after every error.
+    #[derive(Debug)]
+    struct FixedDecisionRetryPolicy(RetryDecision);
+
+    impl RetryPolicy for FixedDecisionRetryPolicy {
+        fn new_session(&self) -> Box<dyn RetrySession> {
+            Box::new(FixedDecisionRetrySession(self.0.clone()))
+        }
+    }
+
+    struct FixedDecisionRetrySession(RetryDecision);
+
+    impl RetrySession for FixedDecisionRetrySession {
+        fn decide_should_retry(&mut self, _request_info: RequestInfo) -> RetryDecision {
+            self.0.clone()
+        }
+
+        fn reset(&mut self) {}
+    }
+
+    /// A profile with no client-side timeout and the given retry decision.
+    fn fixed_decision_profile(decision: RetryDecision) -> ExecutionProfile {
+        ExecutionProfile::builder()
+            .retry_policy(Arc::new(FixedDecisionRetryPolicy(decision)))
+            .request_timeout(None)
+            .build()
+    }
+
+    /// Tests that [`Connection::execute_iter`] follows the retry policy of its
+    /// profile. The first attempt fails with a server error, so the policy
+    /// retries on the same connection. There, the second attempt receives the
+    /// rows.
+    #[tokio::test]
+    async fn connection_execute_iter_follows_profile_retry_policy() {
+        setup_tracing();
+
+        let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel();
+
+        let fixture = FixedConnectionPagingFixture::setup(vec![
+            // Fail the first attempt, then serve the page.
+            RequestRule(
+                execute_opcode_condition().and(Condition::TrueForLimitedTimes(1)),
+                RequestReaction::forge()
+                    .server_error()
+                    .with_feedback_when_performed(feedback_tx),
+            ),
+            RequestRule(execute_opcode_condition(), forge_page(&[0, 1], None)),
+        ])
+        .await;
+
+        let prepared = fixture.prepare_paged_select().await;
+
+        let rows = Arc::clone(&fixture.connection)
+            .execute_iter(
+                prepared,
+                SerializedValues::new(),
+                fixed_decision_profile(RetryDecision::RetrySameTarget(None)),
+            )
+            .await
+            .unwrap()
+            .rows_stream::<(i32,)>()
+            .unwrap()
+            .map_ok(|(v,)| v)
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert_eq!(rows, [0, 1]);
+        // The rows came after one failed attempt.
+        assert!(feedback_rx.try_recv().is_ok());
+        assert!(feedback_rx.try_recv().is_err());
+
+        fixture.finish().await;
+    }
+
+    /// Tests that [`Connection::execute_iter`] stops the paging, with no error,
+    /// when the retry policy of its profile ignores an error. The session pager
+    /// does the same.
+    #[tokio::test]
+    async fn connection_execute_iter_ignored_write_error() {
+        setup_tracing();
+
+        let profile = || fixed_decision_profile(RetryDecision::IgnoreWriteError);
+
+        // Case 1: the error of the first page is ignored. The pager has no rows.
+        let mut fixture = FixedConnectionPagingFixture::setup(vec![RequestRule(
+            execute_opcode_condition(),
+            RequestReaction::forge().server_error(),
+        )])
+        .await;
+
+        let prepared = fixture.prepare_paged_select().await;
+
+        // `Row` accepts any columns, so the empty page passes its type check.
+        let rows = Arc::clone(&fixture.connection)
+            .execute_iter(prepared.clone(), SerializedValues::new(), profile())
+            .await
+            .unwrap()
+            .rows_stream::<Row>()
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert!(rows.is_empty());
+
+        // Case 2: the error of a later page is ignored. The rows of the earlier
+        // pages come, and then the rows end.
+        fixture.change_execute_rules(vec![
+            // Serve the first page, then fail all subsequent ones.
+            RequestRule(
+                execute_opcode_condition().and(Condition::TrueForLimitedTimes(1)),
+                forge_page(&[0], Some(b"after_page_1")),
+            ),
+            RequestRule(
+                execute_opcode_condition(),
+                RequestReaction::forge().server_error(),
+            ),
+        ]);
+
+        let rows = Arc::clone(&fixture.connection)
+            .execute_iter(prepared, SerializedValues::new(), profile())
+            .await
+            .unwrap()
+            .rows_stream::<(i32,)>()
+            .unwrap()
+            .map_ok(|(v,)| v)
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(rows, [0]);
 
         fixture.finish().await;
     }

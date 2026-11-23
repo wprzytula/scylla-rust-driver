@@ -42,7 +42,7 @@ use crate::observability::driver_tracing::{RequestSpan, await_in_span};
 use crate::observability::history::HistoryListener;
 use crate::observability::metrics::Metrics;
 use crate::policies::load_balancing::{self, LoadBalancingPolicy, RoutingInfo};
-use crate::policies::retry::{FallthroughRetryPolicy, RetryPolicy};
+use crate::policies::retry::RetryPolicy;
 use crate::policies::speculative_execution::SpeculativeExecutionPolicy;
 use crate::response::query_result::ColumnSpecs;
 use crate::response::{Coordinator, NonErrorQueryResponse, QueryResponse};
@@ -528,11 +528,12 @@ impl LoadBalancingPolicy for NoopLBP {
 /// It fetches each page on the given connection through the unified execution
 /// core. It takes these settings from its execution profile:
 /// - the consistency and the serial consistency,
-/// - the client-side timeout.
+/// - the client-side timeout,
+/// - the retry policy.
 ///
-/// It does not read the policies of the profile: it never retries, and it has
-/// no load balancing or speculative execution. Also, unlike [`PagingExecutor`],
-/// it has no metrics or history.
+/// It does not read the other two policies of the profile: it has no load
+/// balancing or speculative execution. Also, unlike [`PagingExecutor`], it has
+/// no metrics or history.
 ///
 /// NOTE: This executor only supports executing SELECT statements. More
 /// specifically, it expects that each response is of Rows kind. Other kinds
@@ -556,14 +557,11 @@ impl SingleConnectionPagingExecutor {
     ) -> Result<RequestExecutionOutcome<()>, RequestError> {
         let consistency = self.profile.get_consistency();
         let serial_consistency = self.profile.get_serial_consistency();
-        // The control-connection-style path never retries: a fallthrough retry
-        // policy makes every attempt terminal.
-        let retry_policy = FallthroughRetryPolicy::new();
         let exec_params = RequestExecutionParams {
             is_idempotent: self.prepared.get_is_idempotent(),
             consistency,
             serial_consistency,
-            retry_policy: &retry_policy,
+            retry_policy: self.profile.get_retry_policy().as_ref(),
             load_balancing_policy: &NoopLBP,
             metrics_and_speculative_policy: None,
             request_timeout: self.profile.get_request_timeout(),
@@ -612,14 +610,23 @@ impl SingleConnectionPagingExecutor {
     }
 
     /// Interprets a page outcome. Only Rows responses are valid here.
+    ///
+    /// If the retry policy ignored a write error, the paging stops with an
+    /// empty page, like in the [`PagingExecutor`].
     fn page_from_outcome(
         outcome: RequestExecutionOutcome<()>,
     ) -> Result<(NextReceivedPage, PagingStateResponse), NextPageError> {
         let response = match outcome.result {
             RunRequestResult::IgnoredWriteError => {
-                unreachable!(
-                    "FallthroughRetryPolicy is used, so errors are always propagated and never ignored."
-                )
+                warn!("Ignoring error during fetching pages; stopping fetching.");
+                return Ok((
+                    NextReceivedPage {
+                        rows: DeserializedMetadataAndRawRows::mock_empty(),
+                        tracing_id: None,
+                        request_coordinator: None,
+                    },
+                    PagingStateResponse::NoMorePages,
+                ));
             }
             RunRequestResult::Completed(response) => response,
         };
