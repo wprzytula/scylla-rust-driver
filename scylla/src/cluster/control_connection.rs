@@ -14,12 +14,15 @@ use crate::client::client_routes::ClientRoutesSubscriber;
 use crate::client::execution_profile::ExecutionProfile;
 use crate::client::pager::QueryPager;
 use crate::cluster::metadata::{SchemaMetadataFetchMode, UntranslatedEndpoint};
+use crate::cluster::{ClusterState, NodeRef};
 use crate::errors::{
     ConnectionError, NextPageError, NextRowError, RequestAttemptError, RequestError,
 };
 use crate::frame::response::event::Event;
 use crate::network::Connection;
+use crate::policies::load_balancing::{FallbackPlan, LoadBalancingPolicy, RoutingInfo};
 use crate::policies::retry::FallthroughRetryPolicy;
+use crate::routing::Shard;
 use crate::serialize::row::SerializeRow;
 use crate::statement::prepared::PreparedStatement;
 use crate::statement::{Consistency, Statement};
@@ -78,14 +81,49 @@ impl MetadataRequestTimeouts {
 /// Builds the execution profile of the metadata queries.
 ///
 /// [`Connection::execute_iter`] reads its consistency, serial consistency,
-/// client-side timeout and retry policy.
+/// client-side timeout and retry policy. The other two policies have no effect
+/// on one fixed connection. The profile sets them anyway, so that it states
+/// how the queries run:
+/// - no load balancing ([`NoopLBP`]),
+/// - no speculative execution.
 fn metadata_execution_profile(timeouts: &MetadataRequestTimeouts) -> ExecutionProfile {
     ExecutionProfile::builder()
         .consistency(METADATA_QUERY_CONSISTENCY)
         .serial_consistency(None)
         .request_timeout(Some(timeouts.clientside()))
         .retry_policy(Arc::new(FallthroughRetryPolicy::new()))
+        .load_balancing_policy(Arc::new(NoopLBP))
+        .speculative_execution_policy(None)
         .build()
+}
+
+/// A load balancing policy that never picks a target.
+///
+/// The metadata queries use it, because they go to one fixed connection, where
+/// nothing consults a load balancing policy.
+#[derive(Debug)]
+struct NoopLBP;
+
+impl LoadBalancingPolicy for NoopLBP {
+    fn pick<'a>(
+        &'a self,
+        _request: &'a RoutingInfo,
+        _cluster: &'a ClusterState,
+    ) -> Option<(NodeRef<'a>, Option<Shard>)> {
+        None
+    }
+
+    fn fallback<'a>(
+        &'a self,
+        _request: &'a RoutingInfo,
+        _cluster: &'a ClusterState,
+    ) -> FallbackPlan<'a> {
+        Box::new(std::iter::empty())
+    }
+
+    fn name(&self) -> String {
+        "NoopLBP".into()
+    }
 }
 
 pub(crate) type ControlConnectionCache = DashMap<String, PreparedStatement>;

@@ -1181,9 +1181,10 @@ impl Connection {
     /// - the client-side timeout,
     /// - the retry policy.
     ///
-    /// This method does not read the load balancing policy and the speculative
-    /// execution policy of `profile`. Also, it does not read the statement's own
-    /// consistency, serial consistency, timeout or execution profile handle.
+    /// The load balancing policy and the speculative execution policy of
+    /// `profile` have no effect on one fixed connection. Also, this method does
+    /// not read the statement's own consistency, serial consistency, timeout or
+    /// execution profile handle.
     ///
     /// NOTE: This function only supports executing SELECT statements.
     /// More specifically, it expects that each response is of Rows kind.

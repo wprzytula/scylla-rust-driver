@@ -496,32 +496,6 @@ impl PagingExecutor {
     }
 }
 
-/// No-op LBP implementation, whose sole purpose is to enable plugging [SingleConnectionPagingExecutor]
-/// into the unified execution core.
-#[derive(Debug)]
-struct NoopLBP;
-impl LoadBalancingPolicy for NoopLBP {
-    fn pick<'a>(
-        &'a self,
-        _request: &'a RoutingInfo,
-        _cluster: &'a ClusterState,
-    ) -> Option<(crate::cluster::NodeRef<'a>, Option<Shard>)> {
-        None
-    }
-
-    fn fallback<'a>(
-        &'a self,
-        _request: &'a RoutingInfo,
-        _cluster: &'a ClusterState,
-    ) -> load_balancing::FallbackPlan<'a> {
-        Box::new(std::iter::empty())
-    }
-
-    fn name(&self) -> String {
-        "NoopLBP".into()
-    }
-}
-
 /// Drives paged execution over a single fixed connection, used by
 /// [`Connection::execute_iter`](crate::network::Connection::execute_iter).
 ///
@@ -531,9 +505,15 @@ impl LoadBalancingPolicy for NoopLBP {
 /// - the client-side timeout,
 /// - the retry policy.
 ///
-/// It does not read the other two policies of the profile: it has no load
-/// balancing or speculative execution. Also, unlike [`PagingExecutor`], it has
-/// no metrics or history.
+/// The other two policies of the profile have no effect:
+/// - The load balancing policy: the plan is the one given connection, so no
+///   policy builds it. Also, [`SingleConnectionTarget`] sends no feedback to
+///   the policy.
+/// - The speculative execution policy: speculative execution needs a metrics
+///   sink, and this executor has none. Also, a speculative fiber would find no
+///   other target in the plan.
+///
+/// Unlike [`PagingExecutor`], it has no metrics and no history.
 ///
 /// NOTE: This executor only supports executing SELECT statements. More
 /// specifically, it expects that each response is of Rows kind. Other kinds
@@ -562,7 +542,10 @@ impl SingleConnectionPagingExecutor {
             consistency,
             serial_consistency,
             retry_policy: self.profile.get_retry_policy().as_ref(),
-            load_balancing_policy: &NoopLBP,
+            // No effect: the plan is fixed, and the target sends no feedback.
+            load_balancing_policy: self.profile.get_load_balancing_policy().as_ref(),
+            // No metrics sink, so the speculative execution policy of the
+            // profile has no effect.
             metrics_and_speculative_policy: None,
             request_timeout: self.profile.get_request_timeout(),
             history_listener: None,
