@@ -3,6 +3,7 @@ use crate::authentication::AuthenticatorProvider;
 use crate::client::Compression;
 use crate::client::SelfIdentity;
 use crate::client::driver_config::DriverConfigReporter;
+use crate::client::execution_profile::ExecutionProfile;
 use crate::client::pager::{NextRowError, QueryPager};
 use crate::cluster::NodeAddr;
 use crate::cluster::metadata::{PeerEndpoint, UntranslatedEndpoint};
@@ -95,16 +96,6 @@ pub enum WriteCoalescingDelay {
     /// committing to this option.
     Milliseconds(NonZeroU64),
 }
-
-/// Consistency of the statements that a [`Connection`] sends on its own,
-/// outside of the [`Session`](crate::client::session::Session) request path:
-/// the metadata queries of the control connection.
-///
-/// It applies only to a statement that does not set its own consistency.
-///
-/// The value only keeps the level that earlier versions of the driver used.
-/// It is not a decision that this level is the correct one for these statements.
-const INTERNAL_STATEMENT_CONSISTENCY: Consistency = Consistency::LocalQuorum;
 
 /// Consistency of `USE <keyspace>`.
 ///
@@ -1185,6 +1176,14 @@ impl Connection {
     /// Executes a prepared statements and fetches its results over multiple pages, using
     /// the asynchronous iterator interface.
     ///
+    /// These settings come from `profile`:
+    /// - the consistency and the serial consistency,
+    /// - the client-side timeout.
+    ///
+    /// This method does not read the policies of `profile`. Also, it does not
+    /// read the statement's own consistency, serial consistency, timeout or
+    /// execution profile handle.
+    ///
     /// NOTE: This function only supports executing SELECT statements.
     /// More specifically, it expects that each response is of Rows kind.
     /// Other kinds of responses will result in an error.
@@ -1192,21 +1191,11 @@ impl Connection {
         self: Arc<Self>,
         prepared_statement: PreparedStatement,
         values: SerializedValues,
+        profile: ExecutionProfile,
     ) -> Result<QueryPager, NextRowError> {
-        let consistency = prepared_statement
-            .config
-            .determine_consistency(INTERNAL_STATEMENT_CONSISTENCY);
-        let serial_consistency = prepared_statement.config.serial_consistency.flatten();
-
-        QueryPager::new_for_connection_execute_iter(
-            prepared_statement,
-            values,
-            self,
-            consistency,
-            serial_consistency,
-        )
-        .await
-        .map_err(NextRowError::NextPageError)
+        QueryPager::new_for_connection_execute_iter(prepared_statement, values, self, profile)
+            .await
+            .map_err(NextRowError::NextPageError)
     }
 
     pub(crate) async fn batch_with_consistency(
@@ -2479,6 +2468,7 @@ mod tests {
     use tokio::time::Instant;
 
     use super::{HostConnectionConfig, open_connection, options};
+    use crate::client::execution_profile::ExecutionProfile;
     use crate::cluster::metadata::UntranslatedEndpoint;
     use crate::cluster::node::ResolvedContactPoint;
     use crate::errors::{
@@ -2608,6 +2598,14 @@ mod tests {
         ))
     }
 
+    /// The profile of the `execute_iter` tests, with the given client-side
+    /// timeout.
+    fn paging_test_profile(request_timeout: Option<Duration>) -> ExecutionProfile {
+        ExecutionProfile::builder()
+            .request_timeout(request_timeout)
+            .build()
+    }
+
     /// Tests that [`Connection::execute_iter`] fetches all pages, each with
     /// the paging state returned along with the previous one.
     ///
@@ -2628,7 +2626,7 @@ mod tests {
         let connection = Arc::clone(&fixture.connection);
         let fetch_all = async |prepared: PreparedStatement| {
             Arc::clone(&connection)
-                .execute_iter(prepared, SerializedValues::new())
+                .execute_iter(prepared, SerializedValues::new(), paging_test_profile(None))
                 .await
                 .unwrap()
                 .rows_stream::<(i32,)>()
@@ -2693,13 +2691,16 @@ mod tests {
         )])
         .await;
 
-        let mut prepared = fixture.prepare_paged_select().await;
-        prepared.set_request_timeout(Some(PAGING_TEST_TIMEOUT));
+        let prepared = fixture.prepare_paged_select().await;
 
         stop_the_clock();
 
         let err = Arc::clone(&fixture.connection)
-            .execute_iter(prepared, SerializedValues::new())
+            .execute_iter(
+                prepared,
+                SerializedValues::new(),
+                paging_test_profile(Some(PAGING_TEST_TIMEOUT)),
+            )
             .await
             .unwrap_err();
 
@@ -2733,15 +2734,18 @@ mod tests {
         ])
         .await;
 
-        let mut prepared = fixture.prepare_paged_select().await;
-        prepared.set_request_timeout(Some(PAGING_TEST_TIMEOUT));
+        let prepared = fixture.prepare_paged_select().await;
 
         // The first page is fetched while the clock still runs. The timeout is
         // armed for it as well, but it is far too long to elapse - and, being
         // the last thing done in real time, it cannot be advanced past by
         // accident, either.
         let mut rows_stream = Arc::clone(&fixture.connection)
-            .execute_iter(prepared, SerializedValues::new())
+            .execute_iter(
+                prepared,
+                SerializedValues::new(),
+                paging_test_profile(Some(PAGING_TEST_TIMEOUT)),
+            )
             .await
             .unwrap()
             .rows_stream::<(i32,)>()
@@ -2794,7 +2798,11 @@ mod tests {
         let prepared = fixture.prepare_paged_select().await;
 
         let err = Arc::clone(&fixture.connection)
-            .execute_iter(prepared.clone(), SerializedValues::new())
+            .execute_iter(
+                prepared.clone(),
+                SerializedValues::new(),
+                paging_test_profile(None),
+            )
             .await
             .unwrap_err();
         assert_matches!(
@@ -2830,7 +2838,7 @@ mod tests {
         ]);
 
         let mut rows_stream = Arc::clone(&fixture.connection)
-            .execute_iter(prepared, SerializedValues::new())
+            .execute_iter(prepared, SerializedValues::new(), paging_test_profile(None))
             .await
             .unwrap()
             .rows_stream::<(i32,)>()
@@ -2901,7 +2909,11 @@ mod tests {
         let prepared = fixture.prepare_paged_select().await;
 
         let err = Arc::clone(&fixture.connection)
-            .execute_iter(prepared.clone(), SerializedValues::new())
+            .execute_iter(
+                prepared.clone(),
+                SerializedValues::new(),
+                paging_test_profile(None),
+            )
             .await
             .unwrap_err();
         assert_unexpected_response(err);
@@ -2918,7 +2930,7 @@ mod tests {
         ]);
 
         let mut rows_stream = Arc::clone(&fixture.connection)
-            .execute_iter(prepared, SerializedValues::new())
+            .execute_iter(prepared, SerializedValues::new(), paging_test_profile(None))
             .await
             .unwrap()
             .rows_stream::<(i32,)>()

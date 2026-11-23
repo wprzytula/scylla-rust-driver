@@ -11,6 +11,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
 
 use crate::client::client_routes::ClientRoutesSubscriber;
+use crate::client::execution_profile::ExecutionProfile;
 use crate::client::pager::QueryPager;
 use crate::cluster::metadata::{SchemaMetadataFetchMode, UntranslatedEndpoint};
 use crate::errors::{
@@ -19,8 +20,8 @@ use crate::errors::{
 use crate::frame::response::event::Event;
 use crate::network::Connection;
 use crate::serialize::row::SerializeRow;
-use crate::statement::Statement;
 use crate::statement::prepared::PreparedStatement;
+use crate::statement::{Consistency, Statement};
 
 const METADATA_QUERY_PAGE_SIZE: i32 = 1024;
 
@@ -31,6 +32,12 @@ const CLIENTSIDE_TIMEOUT_MARGIN: Duration = Duration::from_secs(1);
 /// The client-side timeout of a control connection request when there is no
 /// server-side timeout configured to derive it from.
 const DEFAULT_CLIENTSIDE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Consistency of the metadata queries.
+///
+/// The value only keeps the level that earlier versions of the driver used.
+/// It is not a decision that this level is the correct one for these queries.
+const METADATA_QUERY_CONSISTENCY: Consistency = Consistency::LocalQuorum;
 
 /// Timeouts applied to requests executed on the control connection.
 ///
@@ -67,6 +74,18 @@ impl MetadataRequestTimeouts {
     }
 }
 
+/// Builds the execution profile of the metadata queries.
+///
+/// [`Connection::execute_iter`] reads its consistency, serial consistency and
+/// client-side timeout.
+fn metadata_execution_profile(timeouts: &MetadataRequestTimeouts) -> ExecutionProfile {
+    ExecutionProfile::builder()
+        .consistency(METADATA_QUERY_CONSISTENCY)
+        .serial_consistency(None)
+        .request_timeout(Some(timeouts.clientside()))
+        .build()
+}
+
 pub(crate) type ControlConnectionCache = DashMap<String, PreparedStatement>;
 
 pub(crate) enum ControlConnectionEvent {
@@ -99,6 +118,8 @@ pub(super) struct ControlConnection {
     conn: Arc<Connection>,
     endpoint: UntranslatedEndpoint,
     pub(super) config: ControlConnectionConfig,
+    /// The execution profile of the metadata queries, built from `config`.
+    execution_profile: ExecutionProfile,
     cache: Arc<ControlConnectionCache>,
 }
 
@@ -122,11 +143,13 @@ impl ControlConnection {
         error_channel: oneshot::Receiver<ConnectionError>,
         events_channel: mpsc::Receiver<Event>,
     ) -> (Self, ControlConnectionEvents) {
+        let execution_profile = metadata_execution_profile(&config.request_timeouts);
         (
             Self {
                 conn,
                 endpoint,
                 config,
+                execution_profile,
                 cache,
             },
             ControlConnectionEvents {
@@ -204,16 +227,12 @@ impl ControlConnection {
         // Without this `Sync` compiler complains that cluster worker future is not Send.
         values: &(dyn SerializeRow + Sync),
     ) -> Result<QueryPager, NextRowError> {
-        let mut prepared: PreparedStatement = self
-            .get_or_prepare_statement(statement)
-            .await
-            .map_err(|attempt_err| {
-                NextRowError::NextPageError(NextPageError::RequestFailure(attempt_err.into()))
-            })?;
-
-        // Set on this per-use clone rather than in `get_or_prepare_statement`, so that
-        // the shared cache never bakes a timeout in.
-        prepared.set_request_timeout(Some(self.config.request_timeouts.clientside()));
+        let prepared: PreparedStatement =
+            self.get_or_prepare_statement(statement)
+                .await
+                .map_err(|attempt_err| {
+                    NextRowError::NextPageError(NextPageError::RequestFailure(attempt_err.into()))
+                })?;
 
         let serialized_values = prepared.serialize_values(&values).map_err(|ser_err| {
             NextRowError::NextPageError(NextPageError::RequestFailure(
@@ -221,7 +240,7 @@ impl ControlConnection {
             ))
         })?;
         Arc::clone(&self.conn)
-            .execute_iter(prepared, serialized_values)
+            .execute_iter(prepared, serialized_values, self.execution_profile.clone())
             .await
     }
 }

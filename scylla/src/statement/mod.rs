@@ -44,14 +44,6 @@ pub(crate) struct StatementConfig {
     pub(crate) retry_policy: Option<Arc<dyn RetryPolicy>>,
 }
 
-impl StatementConfig {
-    /// Determines the consistency of a query
-    #[must_use]
-    pub(crate) fn determine_consistency(&self, default_consistency: Consistency) -> Consistency {
-        self.consistency.unwrap_or(default_consistency)
-    }
-}
-
 #[derive(Debug, Clone, Copy, Error)]
 #[error("Invalid page size provided: {0}; valid values are [1, i32::MAX]")]
 /// Invalid page size was provided.

@@ -21,6 +21,7 @@ use crate::client::execution::{
     NodeAttemptTarget, Request, RequestExecutionOutcome, RequestExecutionParams, RequestPaging,
     RunRequestResult, SingleConnectionTarget, choose_tablet_block_hint,
 };
+use crate::client::execution_profile::ExecutionProfile;
 use crate::client::session::Session;
 use crate::cluster::{ClusterState, Node};
 use crate::deserialize::DeserializeOwnedRow;
@@ -524,10 +525,14 @@ impl LoadBalancingPolicy for NoopLBP {
 /// Drives paged execution over a single fixed connection, used by
 /// [`Connection::execute_iter`](crate::network::Connection::execute_iter).
 ///
-/// Unlike [`PagingExecutor`], it has no load balancing, retries, speculative
-/// execution, metrics or history: it simply fetches each page on the given
-/// connection through the unified execution core, applying the client-side
-/// timeout.
+/// It fetches each page on the given connection through the unified execution
+/// core. It takes these settings from its execution profile:
+/// - the consistency and the serial consistency,
+/// - the client-side timeout.
+///
+/// It does not read the policies of the profile: it never retries, and it has
+/// no load balancing or speculative execution. Also, unlike [`PagingExecutor`],
+/// it has no metrics or history.
 ///
 /// NOTE: This executor only supports executing SELECT statements. More
 /// specifically, it expects that each response is of Rows kind. Other kinds
@@ -538,9 +543,7 @@ struct SingleConnectionPagingExecutor {
     values: SerializedValues,
     token: Option<Token>,
     page_size: PageSize,
-    consistency: Consistency,
-    serial_consistency: Option<SerialConsistency>,
-    request_timeout: Option<Duration>,
+    profile: ExecutionProfile,
 }
 
 impl SingleConnectionPagingExecutor {
@@ -551,24 +554,26 @@ impl SingleConnectionPagingExecutor {
         paging_state: &PagingState,
         request_span: &RequestSpan,
     ) -> Result<RequestExecutionOutcome<()>, RequestError> {
+        let consistency = self.profile.get_consistency();
+        let serial_consistency = self.profile.get_serial_consistency();
         // The control-connection-style path never retries: a fallthrough retry
         // policy makes every attempt terminal.
         let retry_policy = FallthroughRetryPolicy::new();
         let exec_params = RequestExecutionParams {
             is_idempotent: self.prepared.get_is_idempotent(),
-            consistency: self.consistency,
-            serial_consistency: self.serial_consistency,
+            consistency,
+            serial_consistency,
             retry_policy: &retry_policy,
             load_balancing_policy: &NoopLBP,
             metrics_and_speculative_policy: None,
-            request_timeout: self.request_timeout,
+            request_timeout: self.profile.get_request_timeout(),
             history_listener: None,
             request_kind: RequestPaging::Automatic,
         };
 
         let routing_info = RoutingInfo {
-            consistency: self.consistency,
-            serial_consistency: self.serial_consistency,
+            consistency,
+            serial_consistency,
             token: self.token,
             table: self.prepared.get_table_spec(),
             is_confirmed_lwt: self.prepared.is_confirmed_lwt(),
@@ -580,7 +585,7 @@ impl SingleConnectionPagingExecutor {
                 prepared_statement: &self.prepared,
                 values: &self.values,
                 consistency,
-                serial_consistency: self.serial_consistency,
+                serial_consistency,
                 page_size: Some(self.page_size),
                 paging_state,
                 // This API executes on one given connection and has no `ClusterState`
@@ -1363,16 +1368,9 @@ If you are using this API, you are probably doing something wrong."
         prepared: PreparedStatement,
         values: SerializedValues,
         connection: Arc<Connection>,
-        consistency: Consistency,
-        serial_consistency: Option<SerialConsistency>,
+        profile: ExecutionProfile,
     ) -> Result<Self, NextPageError> {
         let page_size = prepared.get_validated_page_size();
-        let request_timeout = prepared.get_request_timeout().or_else(|| {
-            prepared
-                .get_execution_profile_handle()?
-                .access()
-                .request_timeout
-        });
 
         let (_, token) = match prepared.extract_partition_key_and_calculate_token(&values) {
             Ok(res) => res.unzip(),
@@ -1387,9 +1385,7 @@ If you are using this API, you are probably doing something wrong."
             values,
             token,
             page_size,
-            consistency,
-            serial_consistency,
-            request_timeout,
+            profile,
         };
 
         // Fetch the first page on the caller task (no spawning).
