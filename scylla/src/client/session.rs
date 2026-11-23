@@ -1627,9 +1627,6 @@ impl Session {
     fn get_schema_version_statement(&self) -> &Statement {
         self.internal_statements.schema_version.get_or_init(|| {
             let mut statement = Statement::new(SCHEMA_VERSION_QUERY_STR);
-            // Use ONE consistency for schema version queries - this is a local query
-            // that reads from system.local, so ONE is appropriate.
-            statement.set_consistency(Consistency::One);
             statement.set_is_idempotent(true);
             statement
         })
@@ -2846,8 +2843,10 @@ impl Session {
         &self,
         connection: &Connection,
     ) -> Result<Uuid, SchemaAgreementError> {
+        // Use ONE consistency for schema version queries - this is a local query
+        // that reads from system.local, so ONE is appropriate.
         let result = connection
-            .query_unpaged(self.get_schema_version_statement())
+            .query_unpaged(self.get_schema_version_statement(), Consistency::One)
             .await?;
 
         let (version_id,) = result

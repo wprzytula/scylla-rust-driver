@@ -900,35 +900,23 @@ impl Connection {
         Ok(response)
     }
 
+    /// Sends `statement` unpaged, with the given `consistency` and no serial
+    /// consistency.
+    ///
+    /// Like [`Self::query_raw_with_consistency`], it does not read the
+    /// consistency or the serial consistency of the statement.
     pub(crate) async fn query_unpaged(
         &self,
         statement: &Statement,
+        consistency: Consistency,
     ) -> Result<QueryResult, RequestAttemptError> {
-        // This method is used only for driver internal queries, so no need to consult execution profile here.
-        self.query_raw_unpaged(statement)
+        self.query_raw_with_consistency(statement, consistency, None, None, PagingState::start())
             .await
             .and_then(|response| {
                 response
                     .into_non_error_query_response()?
                     .into_query_result_with_unknown_coordinator()
             })
-    }
-
-    async fn query_raw_unpaged(
-        &self,
-        statement: &Statement,
-    ) -> Result<QueryResponse, RequestAttemptError> {
-        // This method is used only for driver internal queries, so no need to consult execution profile here.
-        self.query_raw_with_consistency(
-            statement,
-            statement
-                .config
-                .determine_consistency(INTERNAL_STATEMENT_CONSISTENCY),
-            statement.config.serial_consistency.flatten(),
-            None,
-            PagingState::start(),
-        )
-        .await
     }
 
     pub(crate) async fn query_raw_with_consistency(
@@ -2498,6 +2486,7 @@ mod tests {
         RequestAttemptError, RequestError,
     };
     use crate::frame::response::result::{ColumnSpec, ColumnType, NativeType, TableSpec};
+    use crate::statement::Consistency;
     use crate::statement::prepared::PreparedStatement;
     use crate::statement::unprepared::Statement;
     use crate::test_utils::{dry_mode_handshake_rules, setup_tracing};
@@ -3168,9 +3157,12 @@ mod tests {
         // As everything is normal, keepalives are answered and queries should succeed.
         for _ in 0..3 {
             options_rx.recv().await.unwrap();
-            conn.query_unpaged(&"SELECT host_id FROM system.local WHERE key='local'".into())
-                .await
-                .unwrap();
+            conn.query_unpaged(
+                &"SELECT host_id FROM system.local WHERE key='local'".into(),
+                Consistency::One,
+            )
+            .await
+            .unwrap();
         }
         // As everything is normal, no error should have been reported.
         assert_matches!(
@@ -3191,9 +3183,12 @@ mod tests {
 
         // As the router is invalidated, all further queries should immediately
         // return error.
-        conn.query_unpaged(&"SELECT host_id FROM system.local WHERE key='local'".into())
-            .await
-            .unwrap_err();
+        conn.query_unpaged(
+            &"SELECT host_id FROM system.local WHERE key='local'".into(),
+            Consistency::One,
+        )
+        .await
+        .unwrap_err();
 
         let _ = proxy.finish().await;
     }
@@ -3412,7 +3407,8 @@ mod tests {
             query_tasks.push(tokio::spawn(async move {
                 let statement = Statement::new(DROP_QUERY);
                 // Timeouts are not enforced by connections, so use tokio built-ins
-                tokio::time::timeout(timeout, conn.query_unpaged(&statement)).await
+                tokio::time::timeout(timeout, conn.query_unpaged(&statement, Consistency::One))
+                    .await
             }));
         }
 
@@ -3449,8 +3445,11 @@ mod tests {
             query_tasks.push(tokio::spawn(async move {
                 let statement = Statement::new(DELAY_HALF_THRESHOLD_QUERY);
                 // Orphan after a short timeout
-                tokio::time::timeout(Duration::from_millis(10), conn.query_unpaged(&statement))
-                    .await
+                tokio::time::timeout(
+                    Duration::from_millis(10),
+                    conn.query_unpaged(&statement, Consistency::One),
+                )
+                .await
             }));
         }
 
@@ -3470,7 +3469,7 @@ mod tests {
 
         // Send one more request to verify that it works
         let statement = Statement::new(SUCCESSFUL_QUERY);
-        conn.query_unpaged(&statement)
+        conn.query_unpaged(&statement, Consistency::One)
             .await
             .expect("Request should have succeeded");
 
@@ -3490,8 +3489,11 @@ mod tests {
             query_tasks.push(tokio::spawn(async move {
                 let statement = Statement::new(DROP_QUERY);
                 // Orphan after a short timeout
-                tokio::time::timeout(Duration::from_millis(10), conn.query_unpaged(&statement))
-                    .await
+                tokio::time::timeout(
+                    Duration::from_millis(10),
+                    conn.query_unpaged(&statement, Consistency::One),
+                )
+                .await
             }));
         }
 
@@ -3511,7 +3513,7 @@ mod tests {
 
         // Send one more request to verify that it works
         let statement = Statement::new(SUCCESSFUL_QUERY);
-        conn.query_unpaged(&statement)
+        conn.query_unpaged(&statement, Consistency::One)
             .await
             .expect("Request should have succeeded");
 
@@ -3552,8 +3554,11 @@ mod tests {
             query_tasks.push(tokio::spawn(async move {
                 let statement = Statement::new(DELAY_DOUBLE_THRESHOLD_QUERY);
                 // Orphan after a short timeout
-                tokio::time::timeout(Duration::from_millis(10), conn.query_unpaged(&statement))
-                    .await
+                tokio::time::timeout(
+                    Duration::from_millis(10),
+                    conn.query_unpaged(&statement, Consistency::One),
+                )
+                .await
             }));
         }
 
@@ -3585,7 +3590,7 @@ mod tests {
 
         // Send one more request to verify that it works
         let statement = Statement::new(SUCCESSFUL_QUERY);
-        conn.query_unpaged(&statement)
+        conn.query_unpaged(&statement, Consistency::One)
             .await
             .expect("Request should have succeeded");
 
