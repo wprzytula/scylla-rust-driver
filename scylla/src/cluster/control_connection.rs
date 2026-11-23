@@ -39,9 +39,11 @@ const DEFAULT_CLIENTSIDE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Consistency of the metadata queries.
 ///
-/// The value only keeps the level that earlier versions of the driver used.
-/// It is not a decision that this level is the correct one for these queries.
-const METADATA_QUERY_CONSISTENCY: Consistency = Consistency::LocalQuorum;
+/// All metadata queries read tables of the `system` and `system_schema`
+/// keyspaces. These keyspaces use `LocalStrategy`, so the node that receives
+/// a query is its only replica. As a result, the level is not expected to
+/// change the result. `One` is also the level of the schema-version read.
+const METADATA_QUERY_CONSISTENCY: Consistency = Consistency::One;
 
 /// Timeouts applied to requests executed on the control connection.
 ///

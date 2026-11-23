@@ -100,9 +100,9 @@ pub enum WriteCoalescingDelay {
 /// Consistency of `USE <keyspace>`.
 ///
 /// The server does not read the consistency of `USE`, but the `QUERY` frame
-/// must carry one. The value keeps the level that earlier versions of the
-/// driver sent.
-const USE_KEYSPACE_CONSISTENCY: Consistency = Consistency::LocalQuorum;
+/// must carry one. `One` is also the level of the other internal statements:
+/// the schema-version read and the metadata queries.
+const USE_KEYSPACE_CONSISTENCY: Consistency = Consistency::One;
 
 pub(crate) struct Connection {
     _worker_handle: RemoteHandle<()>,
